@@ -1,0 +1,54 @@
+# Net Grid Template Sensors
+# Combines both Sigen plants to show true meter-level grid position.
+# During rebalancing, plant-level import/export cancel out → net ≈ 0.
+#
+# Add to configuration.yaml:
+#   template: !include net_grid_sensors.yaml
+# Or merge into an existing template: block.
+#
+# NOTE: Assumes Sigen sensors report in kW. If values look 1000x too large,
+# the integration is reporting in W — divide each float by 1000.
+
+- sensor:
+
+    # Signed net grid power.
+    # Positive = net exporting to grid.
+    # Negative = net importing from grid.
+    - name: "Net Grid Power"
+      unique_id: net_grid_power
+      unit_of_measurement: kW
+      device_class: power
+      state_class: measurement
+      state: >
+        {{ (states('sensor.sigen_plant_grid_export_power') | float(0)
+            + states('sensor.sigen_plant_2_grid_export_power') | float(0)
+            - states('sensor.sigen_plant_grid_import_power') | float(0)
+            - states('sensor.sigen_plant_2_grid_import_power') | float(0)) | round(2) }}
+
+    # Net import only — what's actually being drawn from the grid.
+    # Zero during balanced rebalancing.
+    - name: "Net Grid Import Power"
+      unique_id: net_grid_import_power
+      unit_of_measurement: kW
+      device_class: power
+      state_class: measurement
+      state: >
+        {% set net = (states('sensor.sigen_plant_grid_import_power') | float(0)
+                      + states('sensor.sigen_plant_2_grid_import_power') | float(0)
+                      - states('sensor.sigen_plant_grid_export_power') | float(0)
+                      - states('sensor.sigen_plant_2_grid_export_power') | float(0)) %}
+        {{ [net, 0] | max | round(2) }}
+
+    # Net export only — what's actually being sent to the grid.
+    # Zero during balanced rebalancing.
+    - name: "Net Grid Export Power"
+      unique_id: net_grid_export_power
+      unit_of_measurement: kW
+      device_class: power
+      state_class: measurement
+      state: >
+        {% set net = (states('sensor.sigen_plant_grid_export_power') | float(0)
+                      + states('sensor.sigen_plant_2_grid_export_power') | float(0)
+                      - states('sensor.sigen_plant_grid_import_power') | float(0)
+                      - states('sensor.sigen_plant_2_grid_import_power') | float(0)) %}
+        {{ [net, 0] | max | round(2) }}

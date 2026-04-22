@@ -1,0 +1,147 @@
+# Paste each automation separately into the HA UI editor.
+# Start from 'alias:' — the UI adds the leading dash itself.
+
+# ── AUTOMATION 1: START ────────────────────────────────────────────────────────
+
+alias: Battery Rebalancing - Start
+trigger:
+  - platform: time_pattern
+    minutes: "/2"
+  - platform: state
+    entity_id: input_boolean.battery_rebalancing_enabled
+    to: "on"
+condition:
+  - condition: state
+    entity_id: input_boolean.battery_rebalancing_enabled
+    state: "on"
+  - condition: state
+    entity_id: input_boolean.battery_rebalancing_active
+    state: "off"
+  - condition: state
+    entity_id: switch.sigen_plant_remote_ems_controlled_by_home_assistant
+    state: "on"
+  - condition: state
+    entity_id: switch.sigen_plant_2_remote_ems_controlled_by_home_assistant
+    state: "on"
+action:
+  - variables:
+      soc_1: "{{ states('sensor.sigen_plant_battery_state_of_charge') | float(-1) }}"
+      soc_2: "{{ states('sensor.sigen_plant_2_battery_state_of_charge') | float(-1) }}"
+      start_threshold: "{{ states('input_number.battery_rebalancing_start_threshold') | float(7) }}"
+      transfer_rate: "{{ states('input_number.battery_rebalancing_transfer_rate_kw') | float(3) }}"
+      backup_1: "{{ states('number.sigen_plant_ess_backup_state_of_charge') | float(20) }}"
+      backup_2: "{{ states('number.sigen_plant_2_ess_backup_state_of_charge') | float(20) }}"
+      soc_diff: "{{ (soc_1 - soc_2) | abs }}"
+      higher_is_1: "{{ soc_1 >= soc_2 }}"
+      discharge_soc: "{{ soc_1 if soc_1 >= soc_2 else soc_2 }}"
+      charge_soc: "{{ soc_2 if soc_1 >= soc_2 else soc_1 }}"
+      discharge_backup: "{{ backup_1 if soc_1 >= soc_2 else backup_2 }}"
+  - if: >
+      {{ not (soc_1 >= 0 and soc_2 >= 0
+              and soc_diff > start_threshold
+              and discharge_soc > discharge_backup + 5
+              and charge_soc < 95) }}
+    then:
+      - stop: "Safety or threshold conditions not met"
+  - service: number.set_value
+    target:
+      entity_id: "{{ 'number.sigen_plant_grid_export_limitation' if higher_is_1 else 'number.sigen_plant_2_grid_export_limitation' }}"
+    data:
+      value: "{{ transfer_rate }}"
+  - service: number.set_value
+    target:
+      entity_id: "{{ 'number.sigen_plant_2_grid_import_limitation' if higher_is_1 else 'number.sigen_plant_grid_import_limitation' }}"
+    data:
+      value: "{{ transfer_rate }}"
+  - service: select.select_option
+    target:
+      entity_id: "{{ 'select.sigen_plant_remote_ems_control_mode' if higher_is_1 else 'select.sigen_plant_2_remote_ems_control_mode' }}"
+    data:
+      option: "Command Discharging (ESS First)"
+  - service: select.select_option
+    target:
+      entity_id: "{{ 'select.sigen_plant_2_remote_ems_control_mode' if higher_is_1 else 'select.sigen_plant_remote_ems_control_mode' }}"
+    data:
+      option: "Command Charging (Grid First)"
+  - service: input_boolean.turn_on
+    target:
+      entity_id: input_boolean.battery_rebalancing_active
+mode: single
+
+
+# ── AUTOMATION 2: MONITOR ──────────────────────────────────────────────────────
+
+alias: Battery Rebalancing - Monitor
+trigger:
+  - platform: time_pattern
+    minutes: "/2"
+  - platform: state
+    entity_id: input_boolean.battery_rebalancing_enabled
+    to: "off"
+condition:
+  - condition: state
+    entity_id: input_boolean.battery_rebalancing_active
+    state: "on"
+action:
+  - variables:
+      soc_1: "{{ states('sensor.sigen_plant_battery_state_of_charge') | float(-1) }}"
+      soc_2: "{{ states('sensor.sigen_plant_2_battery_state_of_charge') | float(-1) }}"
+      soc_diff: "{{ (soc_1 - soc_2) | abs }}"
+      stop_threshold: "{{ states('input_number.battery_rebalancing_stop_threshold') | float(3) }}"
+      transfer_rate: "{{ states('input_number.battery_rebalancing_transfer_rate_kw') | float(3) }}"
+      backup_1: "{{ states('number.sigen_plant_ess_backup_state_of_charge') | float(20) }}"
+      backup_2: "{{ states('number.sigen_plant_2_ess_backup_state_of_charge') | float(20) }}"
+      higher_is_1: "{{ soc_1 >= soc_2 }}"
+      discharge_soc: "{{ soc_1 if soc_1 >= soc_2 else soc_2 }}"
+      charge_soc: "{{ soc_2 if soc_1 >= soc_2 else soc_1 }}"
+      discharge_backup: "{{ backup_1 if soc_1 >= soc_2 else backup_2 }}"
+  - if: >
+      {{ is_state('input_boolean.battery_rebalancing_enabled', 'off')
+         or soc_1 < 0 or soc_2 < 0
+         or soc_diff < stop_threshold
+         or discharge_soc <= discharge_backup
+         or charge_soc >= 95
+         or is_state('switch.sigen_plant_remote_ems_controlled_by_home_assistant', 'off')
+         or is_state('switch.sigen_plant_2_remote_ems_controlled_by_home_assistant', 'off') }}
+    then:
+      - service: select.select_option
+        target:
+          entity_id:
+            - select.sigen_plant_remote_ems_control_mode
+            - select.sigen_plant_2_remote_ems_control_mode
+        data:
+          option: Maximum Self Consumption
+      - service: number.set_value
+        target:
+          entity_id:
+            - number.sigen_plant_grid_export_limitation
+            - number.sigen_plant_2_grid_export_limitation
+            - number.sigen_plant_grid_import_limitation
+            - number.sigen_plant_2_grid_import_limitation
+        data:
+          value: 7
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.battery_rebalancing_active
+      - stop: "Rebalancing stopped"
+  - service: number.set_value
+    target:
+      entity_id: "{{ 'number.sigen_plant_grid_export_limitation' if higher_is_1 else 'number.sigen_plant_2_grid_export_limitation' }}"
+    data:
+      value: "{{ transfer_rate }}"
+  - service: number.set_value
+    target:
+      entity_id: "{{ 'number.sigen_plant_2_grid_import_limitation' if higher_is_1 else 'number.sigen_plant_grid_import_limitation' }}"
+    data:
+      value: "{{ transfer_rate }}"
+  - service: select.select_option
+    target:
+      entity_id: "{{ 'select.sigen_plant_remote_ems_control_mode' if higher_is_1 else 'select.sigen_plant_2_remote_ems_control_mode' }}"
+    data:
+      option: "Command Discharging (ESS First)"
+  - service: select.select_option
+    target:
+      entity_id: "{{ 'select.sigen_plant_2_remote_ems_control_mode' if higher_is_1 else 'select.sigen_plant_remote_ems_control_mode' }}"
+    data:
+      option: "Command Charging (Grid First)"
+mode: single

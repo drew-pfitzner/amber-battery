@@ -1,0 +1,55 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Plant 1 — Sigen Plant",
+        "description": "Select the Home Assistant entities for your first Sigen battery (Plant 1). Defaults match the standard Signenergy integration entity IDs.",
+        "data": {
+          "soc_1": "Battery State of Charge",
+          "mode_1": "Remote EMS Control Mode",
+          "ha_switch_1": "Remote EMS Controlled by HA (switch)",
+          "export_limit_1": "Grid Export Limitation",
+          "import_limit_1": "Grid Import Limitation",
+          "backup_soc_1": "ESS Backup State of Charge",
+          "export_power_1": "Grid Export Power sensor",
+          "import_power_1": "Grid Import Power sensor"
+        }
+      },
+      "plant2": {
+        "title": "Plant 2 — Sigen Plant 2",
+        "description": "Select the Home Assistant entities for your second Sigen battery (Plant 2).",
+        "data": {
+          "soc_2": "Battery State of Charge",
+          "mode_2": "Remote EMS Control Mode",
+          "ha_switch_2": "Remote EMS Controlled by HA (switch)",
+          "export_limit_2": "Grid Export Limitation",
+          "import_limit_2": "Grid Import Limitation",
+          "backup_soc_2": "ESS Backup State of Charge",
+          "export_power_2": "Grid Export Power sensor",
+          "import_power_2": "Grid Import Power sensor"
+        }
+      },
+      "settings": {
+        "title": "Operational Settings",
+        "description": "These can be changed later via the integration options.",
+        "data": {
+          "start_threshold": "Start rebalancing when SOC difference exceeds",
+          "stop_threshold": "Stop rebalancing when SOC difference drops below",
+          "transfer_rate": "Transfer rate (kW)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Operational Settings",
+        "data": {
+          "start_threshold": "Start rebalancing when SOC difference exceeds",
+          "stop_threshold": "Stop rebalancing when SOC difference drops below",
+          "transfer_rate": "Transfer rate (kW)"
+        }
+      }
+    }
+  }
+}
