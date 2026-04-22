@@ -7,7 +7,11 @@
       "WebFetch(domain:community.home-assistant.io)",
       "WebFetch(domain:help.amber.com.au)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "Bash(rm -rf legacy)",
+      "Bash(rm -rf custom_components/sigen_rebalancer)",
+      "Bash(git add:*)",
+      "Bash(git commit -m 'Clean up: remove legacy folder and reset custom_components for fresh Sentinel build:*)"
     ]
   }
 }
