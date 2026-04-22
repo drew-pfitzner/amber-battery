@@ -58,31 +58,22 @@ from .const import (
 )
 
 
-async def validate_entity_exists(hass: HomeAssistant, entity_id: str) -> bool:
-    """Check if an entity exists (optional for now)."""
-    return hass.states.get(entity_id) is not None
-
-
 class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for Sentinel."""
 
     VERSION = 1
 
-    def __init__(self):
-        """Initialize the config flow."""
-        self._collected_data = {}
-
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """First step: Plant 1 entity configuration."""
-        errors = {}
+        if not hasattr(self, "_collected_data"):
+            self._collected_data = {}
 
         if user_input is not None:
             self._collected_data.update(user_input)
             return await self.async_step_plant2()
 
-        # Build schema with defaults
         schema = vol.Schema(
             {
                 vol.Required(CONF_SOC_1, default=DEFAULT_SOC_1): selector.EntitySelector(
@@ -112,11 +103,7 @@ class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=schema,
-            errors=errors,
-        )
+        return self.async_show_form(step_id="user", data_schema=schema)
 
     async def async_step_plant2(
         self, user_input: dict[str, Any] | None = None
@@ -225,7 +212,6 @@ class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Sixth step: Rebalancing settings."""
         if user_input is not None:
-            # Combine all collected data
             self._collected_data.update(user_input)
 
             # Create entry with all collected config (data) and settings (options)
@@ -271,7 +257,7 @@ class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry):
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Return options flow."""
         return SentinelOptionsFlow(config_entry)
 
@@ -279,7 +265,7 @@ class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
 class SentinelOptionsFlow(OptionsFlow):
     """Options flow for Sentinel."""
 
-    def __init__(self, config_entry: ConfigEntry):
+    def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize the options flow."""
         self.config_entry = config_entry
 
