@@ -5,6 +5,8 @@ import logging
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -65,6 +67,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._opts = {}
         self._current_mode = MODE_SELF_CONSUMPTION
         self._load_options()
+
+        self.device_info = DeviceInfo(
+            identifiers={(DOMAIN, config_entry.entry_id)},
+            name="Sentinel Energy Manager",
+            manufacturer="Custom",
+            model="Sentinel",
+            sw_version="1.0.0",
+            entry_type=DeviceEntryType.SERVICE,
+        )
 
     def _load_options(self):
         """Load options from config entry (options override data)."""

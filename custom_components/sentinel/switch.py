@@ -94,6 +94,7 @@ class SentinelModeSwitch(CoordinatorEntity, SwitchEntity):
         self._attr_unique_id = f"{DOMAIN}_{description.key}"
         self._attr_name = description.name
         self._attr_icon = description.icon
+        self._attr_device_info = coordinator.device_info
 
     @property
     def is_on(self) -> bool:

@@ -38,6 +38,7 @@ class SentinelActiveModeSensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{DOMAIN}_active_mode"
         self._attr_name = "Active Mode"
         self._attr_icon = "mdi:lightbulb-multiple"
+        self._attr_device_info = coordinator.device_info
 
     @property
     def native_value(self) -> str:
@@ -55,6 +56,7 @@ class SentinelNetGridPowerSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Net Grid Power"
         self._attr_device_class = SensorDeviceClass.POWER
         self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+        self._attr_device_info = coordinator.device_info
 
     @property
     def native_value(self) -> float | None:
@@ -72,6 +74,7 @@ class SentinelMeanBatterySocSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Mean Battery SOC"
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_icon = "mdi:battery"
+        self._attr_device_info = coordinator.device_info
 
     @property
     def native_value(self) -> float | None:

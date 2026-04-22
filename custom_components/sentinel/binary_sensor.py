@@ -36,6 +36,7 @@ class SentinelFailsafeActiveSensor(CoordinatorEntity, BinarySensorEntity):
         self._attr_unique_id = f"{DOMAIN}_failsafe_active"
         self._attr_name = "Failsafe Active"
         self._attr_device_class = BinarySensorDeviceClass.PROBLEM
+        self._attr_device_info = coordinator.device_info
 
     @property
     def is_on(self) -> bool | None:
@@ -52,6 +53,7 @@ class SentinelRebalancingActiveSensor(CoordinatorEntity, BinarySensorEntity):
         self._attr_unique_id = f"{DOMAIN}_rebalancing_active"
         self._attr_name = "Rebalancing Active"
         self._attr_device_class = BinarySensorDeviceClass.RUNNING
+        self._attr_device_info = coordinator.device_info
 
     @property
     def is_on(self) -> bool | None:
