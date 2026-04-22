@@ -58,8 +58,8 @@ Because both phases feed a **single meter**, the meter sees the **net** of both 
 - `Maximum Self Consumption` ← normal/restore state
 - `Command Charging (Grid First)` ← used for rebalancing charge
 - `Command Charging (PV First)`
-- `Command Discharging (PV First)`
 - `Command Discharging (PV First)` ← used for rebalancing discharge
+- `Command Discharging (ESS First)`
 - `Unknown`
 
 ### Grid Limits
@@ -214,16 +214,17 @@ custom_components/sentinel/
 - [ ] Confirm net metering configuration across phases
 - [ ] Verify Amber & Solcast integrations installed and working in HA
 
-### Phase 1 — Coordinator Architecture + Rebalancing (in progress)
-- [ ] Create `custom_components/sentinel/` directory structure
-- [ ] Port all constants, defaults, entity ID keys from sigen_rebalancer → sentinel
-- [ ] Implement `SentinelCoordinator` with priority engine (`_evaluate_priority()`)
-- [ ] Port rebalancing logic: `_async_apply_rebalance()` + safety conditions
-- [ ] Implement FAILSAFE and SELF_CONSUMPTION modes
-- [ ] Create all entity files (sensor, binary_sensor, switch, number, select)
-- [ ] Implement 6-step config flow
-- [ ] **Deploy to HA:** Copy to `config/custom_components/`, restart HA, run config flow
-- [ ] **Test:** Rebalancing works, mode sensor shows correct state, failsafe triggers on entity loss
+### Phase 1 — Coordinator Architecture + Rebalancing (DEPLOYED 2026-04-22)
+- [x] Create `custom_components/sentinel/` directory structure
+- [x] Port all constants, defaults, entity ID keys from sigen_rebalancer → sentinel
+- [x] Implement `SentinelCoordinator` with priority engine (`_evaluate_priority()`)
+- [x] Port rebalancing logic: `_async_apply_rebalance()` + safety conditions
+- [x] Implement FAILSAFE and SELF_CONSUMPTION modes
+- [x] Create all entity files (sensor, binary_sensor, switch, number, select)
+- [x] Implement 6-step config flow
+- [x] **Deploy to HA:** Copy to `config/custom_components/`, restart HA, run config flow
+- [x] **Test:** Rebalancing works, mode sensor shows correct state, failsafe triggers on HA switch off
+- [ ] **Pending:** Verify rebalance stop condition (SOC diff < 3%) restores SELF_CONSUMPTION
 
 ### Phase 2 — ForecastEngine + Morning Floor
 - [ ] Implement `ForecastEngine` class with 6am SOC prediction
