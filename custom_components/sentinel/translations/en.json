@@ -1,0 +1,129 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Plant 1 Configuration",
+        "description": "Configure entity IDs for the first Sigen battery system.",
+        "data": {
+          "soc_1": "Battery 1 State of Charge Sensor",
+          "mode_1": "Battery 1 Mode Select",
+          "ha_switch_1": "Battery 1 HA Control Switch",
+          "export_limit_1": "Battery 1 Grid Export Limit",
+          "import_limit_1": "Battery 1 Grid Import Limit",
+          "backup_soc_1": "Battery 1 ESS Backup SOC",
+          "export_power_1": "Battery 1 Grid Export Power Sensor",
+          "import_power_1": "Battery 1 Grid Import Power Sensor"
+        }
+      },
+      "plant2": {
+        "title": "Plant 2 Configuration",
+        "description": "Configure entity IDs for the second Sigen battery system.",
+        "data": {
+          "soc_2": "Battery 2 State of Charge Sensor",
+          "mode_2": "Battery 2 Mode Select",
+          "ha_switch_2": "Battery 2 HA Control Switch",
+          "export_limit_2": "Battery 2 Grid Export Limit",
+          "import_limit_2": "Battery 2 Grid Import Limit",
+          "backup_soc_2": "Battery 2 ESS Backup SOC",
+          "export_power_2": "Battery 2 Grid Export Power Sensor",
+          "import_power_2": "Battery 2 Grid Import Power Sensor"
+        }
+      },
+      "capacity": {
+        "title": "Battery Capacity",
+        "description": "Total usable capacity per battery (used for forecasting).",
+        "data": {
+          "battery_capacity_kwh": "Capacity (kWh)"
+        }
+      },
+      "amber": {
+        "title": "Amber Electric Integration (Optional)",
+        "description": "Link your Amber Electric price data for grid charging and spike export.",
+        "data": {
+          "amber_general_price": "Current Price Sensor (optional)",
+          "amber_general_forecast": "Price Forecast Sensor (optional)",
+          "amber_price_spike": "Price Spike Binary Sensor (optional)"
+        }
+      },
+      "solcast": {
+        "title": "Solcast Solar Forecast (Optional)",
+        "description": "Link solar forecast data for intelligent grid charging decisions.",
+        "data": {
+          "solcast_pv_solar_forecast_today": "Today's Forecast (optional)",
+          "solcast_pv_solar_forecast_tomorrow": "Tomorrow's Forecast (optional)"
+        }
+      },
+      "settings": {
+        "title": "Rebalancing Settings",
+        "description": "Configure thresholds and rates for battery rebalancing.",
+        "data": {
+          "rebalance_start_threshold": "Start Rebalance (% SOC diff)",
+          "rebalance_stop_threshold": "Stop Rebalance (% SOC diff)",
+          "rebalance_transfer_rate": "Transfer Rate (kW)"
+        }
+      }
+    },
+    "options": {
+      "step": {
+        "init": {
+          "title": "Sentinel Settings",
+          "description": "Adjust rebalancing thresholds and rates.",
+          "data": {
+            "rebalance_start_threshold": "Start Rebalance (% SOC diff)",
+            "rebalance_stop_threshold": "Stop Rebalance (% SOC diff)",
+            "rebalance_transfer_rate": "Transfer Rate (kW)"
+          }
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "sentinel_active_mode": {
+        "name": "Active Mode"
+      },
+      "sentinel_net_grid_power": {
+        "name": "Net Grid Power"
+      },
+      "sentinel_mean_battery_soc": {
+        "name": "Mean Battery SOC"
+      }
+    },
+    "binary_sensor": {
+      "sentinel_failsafe_active": {
+        "name": "Failsafe Active"
+      },
+      "sentinel_rebalancing_active": {
+        "name": "Rebalancing Active"
+      }
+    },
+    "switch": {
+      "sentinel_rebalance_enabled": {
+        "name": "Enable Rebalancing"
+      },
+      "sentinel_morning_floor_enabled": {
+        "name": "Enable Morning Floor"
+      },
+      "sentinel_grid_charge_enabled": {
+        "name": "Enable Grid Charging"
+      },
+      "sentinel_spike_export_enabled": {
+        "name": "Enable Spike Export"
+      },
+      "sentinel_outage_prep_enabled": {
+        "name": "Enable Outage Prep"
+      }
+    },
+    "number": {
+      "sentinel_rebalance_start_threshold": {
+        "name": "Rebalance Start Threshold"
+      },
+      "sentinel_rebalance_stop_threshold": {
+        "name": "Rebalance Stop Threshold"
+      },
+      "sentinel_rebalance_transfer_rate": {
+        "name": "Rebalance Transfer Rate"
+      }
+    }
+  }
+}
