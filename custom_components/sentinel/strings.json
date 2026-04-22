@@ -62,17 +62,17 @@
           "rebalance_transfer_rate": "Transfer Rate (kW)"
         }
       }
-    },
-    "options": {
-      "step": {
-        "init": {
-          "title": "Sentinel Settings",
-          "description": "Adjust rebalancing thresholds and rates.",
-          "data": {
-            "rebalance_start_threshold": "Start Rebalance (% SOC diff)",
-            "rebalance_stop_threshold": "Stop Rebalance (% SOC diff)",
-            "rebalance_transfer_rate": "Transfer Rate (kW)"
-          }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sentinel Settings",
+        "description": "Adjust rebalancing thresholds and rates.",
+        "data": {
+          "rebalance_start_threshold": "Start Rebalance (% SOC diff)",
+          "rebalance_stop_threshold": "Stop Rebalance (% SOC diff)",
+          "rebalance_transfer_rate": "Transfer Rate (kW)"
         }
       }
     }

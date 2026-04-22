@@ -4,9 +4,8 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.entity import State
 
 from .const import (
     DOMAIN,
@@ -68,16 +67,21 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._load_options()
 
     def _load_options(self):
-        """Load options from config entry."""
+        """Load options from config entry (options override data)."""
+        data = self.config_entry.data
+        options = self.config_entry.options
         self._opts = {
-            OPT_REBALANCE_START_THRESHOLD: self.config_entry.options.get(
-                OPT_REBALANCE_START_THRESHOLD, DEFAULT_REBALANCE_START_THRESHOLD
+            OPT_REBALANCE_START_THRESHOLD: options.get(
+                OPT_REBALANCE_START_THRESHOLD,
+                data.get(OPT_REBALANCE_START_THRESHOLD, DEFAULT_REBALANCE_START_THRESHOLD),
             ),
-            OPT_REBALANCE_STOP_THRESHOLD: self.config_entry.options.get(
-                OPT_REBALANCE_STOP_THRESHOLD, DEFAULT_REBALANCE_STOP_THRESHOLD
+            OPT_REBALANCE_STOP_THRESHOLD: options.get(
+                OPT_REBALANCE_STOP_THRESHOLD,
+                data.get(OPT_REBALANCE_STOP_THRESHOLD, DEFAULT_REBALANCE_STOP_THRESHOLD),
             ),
-            OPT_REBALANCE_TRANSFER_RATE: self.config_entry.options.get(
-                OPT_REBALANCE_TRANSFER_RATE, DEFAULT_REBALANCE_TRANSFER_RATE
+            OPT_REBALANCE_TRANSFER_RATE: options.get(
+                OPT_REBALANCE_TRANSFER_RATE,
+                data.get(OPT_REBALANCE_TRANSFER_RATE, DEFAULT_REBALANCE_TRANSFER_RATE),
             ),
         }
 

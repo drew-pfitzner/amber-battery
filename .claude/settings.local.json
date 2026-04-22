@@ -11,7 +11,12 @@
       "Bash(rm -rf legacy)",
       "Bash(rm -rf custom_components/sigen_rebalancer)",
       "Bash(git add:*)",
-      "Bash(git commit -m 'Clean up: remove legacy folder and reset custom_components for fresh Sentinel build:*)"
+      "Bash(git commit -m 'Clean up: remove legacy folder and reset custom_components for fresh Sentinel build:*)",
+      "Bash(gh repo:*)",
+      "Bash(git commit -m 'Phase 1: Implement Sentinel custom integration:*)",
+      "Bash(git commit -m 'Fix: config flow registration issue:*)",
+      "Bash(python3:*)",
+      "Bash(git commit -m ':*)"
     ]
   }
 }

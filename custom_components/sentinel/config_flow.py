@@ -214,26 +214,9 @@ class SentinelConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._collected_data.update(user_input)
 
-            # Create entry with all collected config (data) and settings (options)
-            options = {
-                OPT_REBALANCE_START_THRESHOLD: user_input.get(
-                    OPT_REBALANCE_START_THRESHOLD,
-                    DEFAULT_REBALANCE_START_THRESHOLD,
-                ),
-                OPT_REBALANCE_STOP_THRESHOLD: user_input.get(
-                    OPT_REBALANCE_STOP_THRESHOLD,
-                    DEFAULT_REBALANCE_STOP_THRESHOLD,
-                ),
-                OPT_REBALANCE_TRANSFER_RATE: user_input.get(
-                    OPT_REBALANCE_TRANSFER_RATE,
-                    DEFAULT_REBALANCE_TRANSFER_RATE,
-                ),
-            }
-
             return self.async_create_entry(
                 title="Sentinel Energy Manager",
                 data=self._collected_data,
-                options=options,
             )
 
         schema = vol.Schema(
