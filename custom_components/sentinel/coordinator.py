@@ -46,7 +46,7 @@ from .const import (
     DEFAULT_BACKUP_BUFFER,
     MODE_MAXIMUM_SELF_CONSUMPTION,
     MODE_COMMAND_CHARGING_GRID_FIRST,
-    MODE_COMMAND_DISCHARGING_ESS_FIRST,
+    MODE_COMMAND_DISCHARGING_PV_FIRST,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +67,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._opts = {}
         self._current_mode = MODE_SELF_CONSUMPTION
         self._load_options()
+
+        # Mode enable flags — stored in memory, persisted to options
+        self._mode_enabled = {
+            MODE_REBALANCE: config_entry.options.get("rebalance_enabled", False),
+            MODE_MORNING_FLOOR: config_entry.options.get("morning_floor_enabled", False),
+            MODE_GRID_CHARGE: config_entry.options.get("grid_charge_enabled", False),
+            MODE_SPIKE_EXPORT: config_entry.options.get("spike_export_enabled", False),
+            MODE_OUTAGE_PREP: config_entry.options.get("outage_prep_enabled", False),
+        }
 
         self.device_info = DeviceInfo(
             identifiers={(DOMAIN, config_entry.entry_id)},
@@ -104,10 +113,25 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._load_options()
         await self.async_refresh()
 
+    def set_mode_enabled(self, mode: str, enabled: bool) -> None:
+        """Set a mode's enabled state (called by switch entities)."""
+        self._mode_enabled[mode] = enabled
+        # Persist to options (without triggering reload)
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            options={
+                **self.config_entry.options,
+                f"{mode.lower()}_enabled": enabled,
+            },
+        )
+
+    def is_mode_enabled(self, mode: str) -> bool:
+        """Check if a mode is enabled."""
+        return self._mode_enabled.get(mode, False)
+
     async def _async_update_data(self) -> dict:
         """Fetch data from Sigen entities and evaluate priority mode."""
         try:
-            # Read all Sigen entity states
             config = self.config_entry.data
             soc_1 = self._get_state_float(config[CONF_SOC_1])
             soc_2 = self._get_state_float(config[CONF_SOC_2])
@@ -115,54 +139,43 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             backup_soc_2 = self._get_state_float(config[CONF_BACKUP_SOC_2])
             ha_switch_1 = self._get_state_bool(config[CONF_HA_SWITCH_1])
             ha_switch_2 = self._get_state_bool(config[CONF_HA_SWITCH_2])
-            export_power_1 = self._get_state_float(config[CONF_EXPORT_POWER_1])
-            export_power_2 = self._get_state_float(config[CONF_EXPORT_POWER_2])
-            import_power_1 = self._get_state_float(config[CONF_IMPORT_POWER_1])
-            import_power_2 = self._get_state_float(config[CONF_IMPORT_POWER_2])
+            export_power_1 = self._get_state_float(config[CONF_EXPORT_POWER_1]) or 0
+            export_power_2 = self._get_state_float(config[CONF_EXPORT_POWER_2]) or 0
+            import_power_1 = self._get_state_float(config[CONF_IMPORT_POWER_1]) or 0
+            import_power_2 = self._get_state_float(config[CONF_IMPORT_POWER_2]) or 0
 
-            # Check for entity availability (failsafe if any unavailable)
-            if any(
+            # FAILSAFE: any critical entity unavailable OR either HA switch off
+            entities_unavailable = any(
                 val is None
-                for val in [
-                    soc_1,
-                    soc_2,
-                    backup_soc_1,
-                    backup_soc_2,
-                    ha_switch_1,
-                    ha_switch_2,
-                ]
-            ):
+                for val in [soc_1, soc_2, backup_soc_1, backup_soc_2, ha_switch_1, ha_switch_2]
+            )
+            ha_switches_off = (ha_switch_1 is False) or (ha_switch_2 is False)
+
+            if entities_unavailable or ha_switches_off:
+                if self._current_mode != MODE_FAILSAFE:
+                    _LOGGER.warning(
+                        "Entering FAILSAFE: entities_unavailable=%s, ha_switches_off=%s",
+                        entities_unavailable, ha_switches_off,
+                    )
                 await self._async_apply_failsafe()
                 self._current_mode = MODE_FAILSAFE
             else:
-                # Evaluate priority
-                new_mode = await self._evaluate_priority(
-                    soc_1,
-                    soc_2,
-                    backup_soc_1,
-                    backup_soc_2,
-                    ha_switch_1,
-                    ha_switch_2,
+                new_mode = self._evaluate_priority(
+                    soc_1, soc_2, backup_soc_1, backup_soc_2,
                 )
 
-                # Apply mode if changed
                 if new_mode != self._current_mode:
-                    await self._apply_mode(new_mode)
+                    _LOGGER.info("Mode change: %s -> %s", self._current_mode, new_mode)
                     self._current_mode = new_mode
-                else:
-                    # Mode unchanged; re-apply to ensure state is correct
-                    await self._apply_mode(self._current_mode)
+
+                await self._apply_mode(self._current_mode)
 
             # Calculate net grid power
-            net_grid_export = export_power_1 + export_power_2
-            net_grid_import = import_power_1 + import_power_2
+            net_grid_export = max(0, export_power_1 + export_power_2)
+            net_grid_import = max(0, import_power_1 + import_power_2)
             net_grid_power = net_grid_export - net_grid_import
 
-            # Clamp to 0 if negligible
-            net_grid_import = max(0, net_grid_import)
-            net_grid_export = max(0, net_grid_export)
-
-            soc_diff = abs(soc_1 - soc_2)
+            soc_diff = abs((soc_1 or 0) - (soc_2 or 0))
 
             return {
                 "soc_1": soc_1,
@@ -179,75 +192,51 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.error("Error in coordinator update: %s", err)
             raise UpdateFailed(f"Error: {err}")
 
-    async def _evaluate_priority(
+    def _evaluate_priority(
         self,
         soc_1: float,
         soc_2: float,
         backup_soc_1: float,
         backup_soc_2: float,
-        ha_switch_1: bool,
-        ha_switch_2: bool,
     ) -> str:
         """Evaluate priority and return the highest-priority valid mode."""
-        config = self.config_entry.data
-
-        # Priority 1: FAILSAFE (already handled in _async_update_data)
+        # Priority 1: FAILSAFE — already handled in _async_update_data
 
         # Priority 2: SPIKE_EXPORT (stub)
-        if self._is_mode_enabled(MODE_SPIKE_EXPORT):
-            if await self._check_spike_export_conditions():
+        if self.is_mode_enabled(MODE_SPIKE_EXPORT):
+            if self._check_spike_export_conditions():
                 return MODE_SPIKE_EXPORT
 
         # Priority 3: OUTAGE_PREP (stub)
-        if self._is_mode_enabled(MODE_OUTAGE_PREP):
-            if await self._check_outage_prep_conditions():
+        if self.is_mode_enabled(MODE_OUTAGE_PREP):
+            if self._check_outage_prep_conditions():
                 return MODE_OUTAGE_PREP
 
         # Priority 4: GRID_CHARGE (stub)
-        if self._is_mode_enabled(MODE_GRID_CHARGE):
-            if await self._check_grid_charge_conditions():
+        if self.is_mode_enabled(MODE_GRID_CHARGE):
+            if self._check_grid_charge_conditions():
                 return MODE_GRID_CHARGE
 
         # Priority 5: REBALANCE
-        if self._is_mode_enabled(MODE_REBALANCE):
-            if self._check_rebalance_conditions(
-                soc_1, soc_2, backup_soc_1, backup_soc_2, ha_switch_1, ha_switch_2
-            ):
+        if self.is_mode_enabled(MODE_REBALANCE):
+            if self._check_rebalance_conditions(soc_1, soc_2, backup_soc_1, backup_soc_2):
                 return MODE_REBALANCE
 
         # Priority 6: MORNING_FLOOR (stub)
-        if self._is_mode_enabled(MODE_MORNING_FLOOR):
-            if await self._check_morning_floor_conditions():
+        if self.is_mode_enabled(MODE_MORNING_FLOOR):
+            if self._check_morning_floor_conditions():
                 return MODE_MORNING_FLOOR
 
         # Priority 7: SELF_CONSUMPTION (always valid)
         return MODE_SELF_CONSUMPTION
 
-    def _is_mode_enabled(self, mode: str) -> bool:
-        """Check if a mode switch is enabled."""
-        mode_switch_map = {
-            MODE_REBALANCE: "switch.sentinel_rebalance_enabled",
-            MODE_MORNING_FLOOR: "switch.sentinel_morning_floor_enabled",
-            MODE_GRID_CHARGE: "switch.sentinel_grid_charge_enabled",
-            MODE_SPIKE_EXPORT: "switch.sentinel_spike_export_enabled",
-            MODE_OUTAGE_PREP: "switch.sentinel_outage_prep_enabled",
-        }
-        if mode not in mode_switch_map:
-            return False
-        entity_id = mode_switch_map[mode]
-        state = self.hass.states.get(entity_id)
-        return state and state.state == "on"
-
-    async def _check_spike_export_conditions(self) -> bool:
-        """Check if SPIKE_EXPORT conditions are met (stub)."""
+    def _check_spike_export_conditions(self) -> bool:
         return False
 
-    async def _check_outage_prep_conditions(self) -> bool:
-        """Check if OUTAGE_PREP conditions are met (stub)."""
+    def _check_outage_prep_conditions(self) -> bool:
         return False
 
-    async def _check_grid_charge_conditions(self) -> bool:
-        """Check if GRID_CHARGE conditions are met (stub)."""
+    def _check_grid_charge_conditions(self) -> bool:
         return False
 
     def _check_rebalance_conditions(
@@ -256,50 +245,42 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         soc_2: float,
         backup_soc_1: float,
         backup_soc_2: float,
-        ha_switch_1: bool,
-        ha_switch_2: bool,
     ) -> bool:
         """Check if REBALANCE conditions are met."""
         soc_diff = abs(soc_1 - soc_2)
-        start_threshold = self._opts[OPT_REBALANCE_START_THRESHOLD]
-        stop_threshold = self._opts[OPT_REBALANCE_STOP_THRESHOLD]
 
-        # If already rebalancing, check stop condition
+        # Use stop threshold if already rebalancing, start threshold otherwise
         if self._current_mode == MODE_REBALANCE:
-            threshold = stop_threshold
+            threshold = self._opts[OPT_REBALANCE_STOP_THRESHOLD]
         else:
-            threshold = start_threshold
-
-        # Safety conditions
-        if not (ha_switch_1 and ha_switch_2):
-            return False
+            threshold = self._opts[OPT_REBALANCE_START_THRESHOLD]
 
         if soc_diff <= threshold:
             return False
 
         # Determine which plant would discharge
-        plant_discharge_soc = max(soc_1, soc_2)
-        plant_discharge_backup_soc = (
-            backup_soc_1 if soc_1 >= soc_2 else backup_soc_2
-        )
+        if soc_1 >= soc_2:
+            discharge_soc, discharge_backup = soc_1, backup_soc_1
+            charge_soc = soc_2
+        else:
+            discharge_soc, discharge_backup = soc_2, backup_soc_2
+            charge_soc = soc_1
 
-        # Check discharge plant has enough SOC
-        if plant_discharge_soc <= (plant_discharge_backup_soc + DEFAULT_BACKUP_BUFFER):
+        # Discharge plant must have headroom above backup SOC
+        if discharge_soc <= (discharge_backup + DEFAULT_BACKUP_BUFFER):
             return False
 
-        # Check charge plant is not already full
-        plant_charge_soc = min(soc_1, soc_2)
-        if plant_charge_soc >= DEFAULT_MAX_CHARGE_SOC:
+        # Charge plant must not be full
+        if charge_soc >= DEFAULT_MAX_CHARGE_SOC:
             return False
 
         return True
 
-    async def _check_morning_floor_conditions(self) -> bool:
-        """Check if MORNING_FLOOR conditions are met (stub)."""
+    def _check_morning_floor_conditions(self) -> bool:
         return False
 
     async def _apply_mode(self, mode: str) -> None:
-        """Apply the specified mode by calling the appropriate handler."""
+        """Apply the specified mode."""
         if mode == MODE_FAILSAFE:
             await self._async_apply_failsafe()
         elif mode == MODE_REBALANCE:
@@ -307,74 +288,27 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         elif mode == MODE_SELF_CONSUMPTION:
             await self._async_apply_self_consumption()
         else:
-            # Stub modes: default to self-consumption
             await self._async_apply_self_consumption()
 
     async def _async_apply_failsafe(self) -> None:
-        """Apply FAILSAFE mode: both batteries to Maximum Self Consumption."""
-        config = self.config_entry.data
+        """FAILSAFE: both batteries to Maximum Self Consumption, restore limits."""
         await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
         await self._restore_all_grid_limits()
 
     async def _async_apply_rebalance(self) -> None:
-        """Apply REBALANCE mode: port rebalancing logic from sigen_rebalancer."""
+        """REBALANCE: discharge higher SOC battery, charge lower."""
         config = self.config_entry.data
         soc_1 = self._get_state_float(config[CONF_SOC_1])
         soc_2 = self._get_state_float(config[CONF_SOC_2])
-        ha_switch_1 = self._get_state_bool(config[CONF_HA_SWITCH_1])
-        ha_switch_2 = self._get_state_bool(config[CONF_HA_SWITCH_2])
 
-        # Check if conditions still met (safety)
-        if not (ha_switch_1 and ha_switch_2):
-            await self._async_apply_self_consumption()
+        if soc_1 is None or soc_2 is None:
             return
 
-        backup_soc_1 = self._get_state_float(config[CONF_BACKUP_SOC_1])
-        backup_soc_2 = self._get_state_float(config[CONF_BACKUP_SOC_2])
-
-        soc_diff = abs(soc_1 - soc_2)
-        stop_threshold = self._opts[OPT_REBALANCE_STOP_THRESHOLD]
-
-        if soc_diff <= stop_threshold:
-            await self._async_apply_self_consumption()
-            return
-
-        # Determine which plant discharges
-        if soc_1 >= soc_2:
-            plant_discharge = 1
-            plant_charge = 2
-            discharge_backup_soc = backup_soc_1
-        else:
-            plant_discharge = 2
-            plant_charge = 1
-            discharge_backup_soc = backup_soc_2
-
-        # Check safety: discharge plant has headroom
-        if plant_discharge == 1:
-            if soc_1 <= (discharge_backup_soc + DEFAULT_BACKUP_BUFFER):
-                await self._async_apply_self_consumption()
-                return
-        else:
-            if soc_2 <= (discharge_backup_soc + DEFAULT_BACKUP_BUFFER):
-                await self._async_apply_self_consumption()
-                return
-
-        # Check safety: charge plant is not full
-        if plant_charge == 1:
-            if soc_1 >= DEFAULT_MAX_CHARGE_SOC:
-                await self._async_apply_self_consumption()
-                return
-        else:
-            if soc_2 >= DEFAULT_MAX_CHARGE_SOC:
-                await self._async_apply_self_consumption()
-                return
-
-        # Set modes and limits
         transfer_rate = self._opts[OPT_REBALANCE_TRANSFER_RATE]
 
-        if plant_discharge == 1:
+        if soc_1 >= soc_2:
             # Plant 1 discharges, Plant 2 charges
-            await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_DISCHARGING_ESS_FIRST)
+            await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_DISCHARGING_PV_FIRST)
             await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_CHARGING_GRID_FIRST)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], transfer_rate)
@@ -382,7 +316,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], 0)
         else:
             # Plant 2 discharges, Plant 1 charges
-            await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_DISCHARGING_ESS_FIRST)
+            await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_DISCHARGING_PV_FIRST)
             await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_CHARGING_GRID_FIRST)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], transfer_rate)
@@ -390,7 +324,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], 0)
 
     async def _async_apply_self_consumption(self) -> None:
-        """Apply SELF_CONSUMPTION mode: both batteries to Maximum Self Consumption."""
+        """SELF_CONSUMPTION: both batteries to normal mode, restore limits."""
         await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
         await self._restore_all_grid_limits()
 
@@ -403,25 +337,23 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
     async def _restore_all_grid_limits(self) -> None:
         """Restore all grid limits to maximum (7 kW)."""
         config = self.config_entry.data
-        max_limit = DEFAULT_MAX_GRID_LIMIT
-        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], max_limit)
-        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], max_limit)
-        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], max_limit)
-        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], max_limit)
+        limit = DEFAULT_MAX_GRID_LIMIT
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], limit)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], limit)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], limit)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], limit)
 
     async def _call_service_set_mode(self, entity_id: str, mode: str) -> None:
         """Set a battery mode via select service."""
         await self.hass.services.async_call(
-            "select",
-            "select_option",
+            "select", "select_option",
             {"entity_id": entity_id, "option": mode},
         )
 
     async def _call_service_set_limit(self, entity_id: str, value: float) -> None:
         """Set a grid limit via number service."""
         await self.hass.services.async_call(
-            "number",
-            "set_value",
+            "number", "set_value",
             {"entity_id": entity_id, "value": value},
         )
 

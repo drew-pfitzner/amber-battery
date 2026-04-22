@@ -59,7 +59,7 @@ Because both phases feed a **single meter**, the meter sees the **net** of both 
 - `Command Charging (Grid First)` ← used for rebalancing charge
 - `Command Charging (PV First)`
 - `Command Discharging (PV First)`
-- `Command Discharging (ESS First)` ← used for rebalancing discharge
+- `Command Discharging (PV First)` ← used for rebalancing discharge
 - `Unknown`
 
 ### Grid Limits

@@ -14,12 +14,6 @@ from .const import (
     MODE_GRID_CHARGE,
     MODE_SPIKE_EXPORT,
     MODE_OUTAGE_PREP,
-    OPT_REBALANCE_START_THRESHOLD,
-    OPT_REBALANCE_STOP_THRESHOLD,
-    OPT_REBALANCE_TRANSFER_RATE,
-    DEFAULT_REBALANCE_START_THRESHOLD,
-    DEFAULT_REBALANCE_STOP_THRESHOLD,
-    DEFAULT_REBALANCE_TRANSFER_RATE,
 )
 
 
@@ -99,17 +93,16 @@ class SentinelModeSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self) -> bool:
         """Return True if switch is on."""
-        # Read from config entry options
-        option_key = f"{self.entity_description.mode_key.lower()}_enabled"
-        # For Phase 1, all switches default to OFF (not in options yet)
-        return self.coordinator.config_entry.options.get(option_key, False)
+        return self.coordinator.is_mode_enabled(self.entity_description.mode_key)
 
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on the switch (enable mode)."""
-        option_key = f"{self.entity_description.mode_key.lower()}_enabled"
-        await self.coordinator.async_set_option(option_key, True)
+        self.coordinator.set_mode_enabled(self.entity_description.mode_key, True)
+        self.async_write_ha_state()
+        await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn off the switch (disable mode)."""
-        option_key = f"{self.entity_description.mode_key.lower()}_enabled"
-        await self.coordinator.async_set_option(option_key, False)
+        self.coordinator.set_mode_enabled(self.entity_description.mode_key, False)
+        self.async_write_ha_state()
+        await self.coordinator.async_refresh()

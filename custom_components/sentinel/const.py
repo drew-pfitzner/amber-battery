@@ -81,4 +81,4 @@ DEFAULT_IMPORT_POWER_2 = "sensor.sigen_plant_2_grid_import_power"
 # Battery mode names (as they appear in sigen_plant remote_ems_control_mode select)
 MODE_MAXIMUM_SELF_CONSUMPTION = "Maximum Self Consumption"
 MODE_COMMAND_CHARGING_GRID_FIRST = "Command Charging (Grid First)"
-MODE_COMMAND_DISCHARGING_ESS_FIRST = "Command Discharging (ESS First)"
+MODE_COMMAND_DISCHARGING_PV_FIRST = "Command Discharging (PV First)"
