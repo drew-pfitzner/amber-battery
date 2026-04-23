@@ -45,19 +45,38 @@ CONF_AMBER_PRICE_SPIKE = "amber_price_spike"
 CONF_SOLCAST_TODAY = "solcast_pv_solar_forecast_today"
 CONF_SOLCAST_TOMORROW = "solcast_pv_solar_forecast_tomorrow"
 
-# Options keys
+# Amber forecast action (Phase 3+)
+CONF_AMBER_SITE_NAME = "amber_site_name"
+
+# Options keys — rebalancing
 OPT_REBALANCE_START_THRESHOLD = "rebalance_start_threshold"
 OPT_REBALANCE_STOP_THRESHOLD = "rebalance_stop_threshold"
 OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
+
+# Options keys — morning floor
+OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
+OPT_MORNING_CHARGE_RATE = "morning_charge_rate"
+OPT_TYPICAL_OVERNIGHT_LOAD = "typical_overnight_load"
 
 # Default values
 DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
+DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
+DEFAULT_MORNING_CHARGE_RATE = 2.0        # kW
+DEFAULT_TYPICAL_OVERNIGHT_LOAD = 5.0     # kWh total overnight
 DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
+
+# Morning floor time window
+MORNING_FLOOR_START_HOUR = 22  # 10 PM
+MORNING_FLOOR_END_HOUR = 6    # 6 AM
+
+# Load power sensors (not configurable — known Sigen entity IDs)
+LOAD_POWER_1 = "sensor.sigen_plant_load_power"
+LOAD_POWER_2 = "sensor.sigen_plant_2_load_power"
 
 # Default Sigen entity IDs (pre-fill for user convenience)
 DEFAULT_SOC_1 = "sensor.sigen_plant_battery_state_of_charge"

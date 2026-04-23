@@ -1,16 +1,23 @@
 """Sensors for Sentinel Energy Manager."""
 
+from datetime import datetime
+import logging
+
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPower, PERCENTAGE
+from homeassistant.const import UnitOfPower, UnitOfEnergy, PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, SCAN_INTERVAL_SECONDS
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -24,6 +31,9 @@ async def async_setup_entry(
         SentinelActiveModeSensor(coordinator),
         SentinelNetGridPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
+        SentinelPredicted6amSocSensor(coordinator),
+        SentinelDailyGridImportSensor(coordinator),
+        SentinelDailyGridExportSensor(coordinator),
     ]
 
     async_add_entities(sensors)
@@ -84,3 +94,96 @@ class SentinelMeanBatterySocSensor(CoordinatorEntity, SensorEntity):
         if soc_1 is not None and soc_2 is not None:
             return (soc_1 + soc_2) / 2
         return None
+
+
+class SentinelPredicted6amSocSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing predicted SOC at 6am."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_predicted_soc_at_6am"
+        self._attr_name = "Predicted SOC at 6am"
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = "mdi:crystal-ball"
+        self._attr_device_info = coordinator.device_info
+        self._attr_suggested_display_precision = 1
+
+    @property
+    def native_value(self) -> float | None:
+        """Return predicted 6am SOC."""
+        return self.coordinator.data.get("predicted_6am_soc")
+
+
+class SentinelDailyEnergySensor(CoordinatorEntity, SensorEntity):
+    """Base class for daily energy accumulation sensors.
+
+    Integrates instantaneous power (kW) over time to produce daily kWh.
+    Resets at midnight local time.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator, key: str, name: str, icon: str, power_key: str):
+        """Initialize the daily energy sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_device_info = coordinator.device_info
+        self._power_key = power_key
+        self._accumulated_kwh: float = 0.0
+        self._last_update: datetime | None = None
+        self._last_reset: datetime | None = None
+
+    @property
+    def native_value(self) -> float:
+        """Return accumulated energy today."""
+        now = dt_util.now()
+        # Reset at midnight
+        if self._last_reset is None or self._last_reset.date() < now.date():
+            self._accumulated_kwh = 0.0
+            self._last_reset = now
+
+        power_kw = self.coordinator.data.get(self._power_key)
+        if power_kw is not None and power_kw > 0 and self._last_update is not None:
+            elapsed_hours = (now - self._last_update).total_seconds() / 3600
+            if 0 < elapsed_hours < 0.1:  # Sanity: skip if gap > 6 min
+                self._accumulated_kwh += power_kw * elapsed_hours
+
+        self._last_update = now
+        return round(self._accumulated_kwh, 3)
+
+    @property
+    def last_reset(self) -> datetime | None:
+        """Return the time of the last reset (midnight)."""
+        return self._last_reset
+
+
+class SentinelDailyGridImportSensor(SentinelDailyEnergySensor):
+    """Daily kWh imported from the grid."""
+
+    def __init__(self, coordinator):
+        super().__init__(
+            coordinator,
+            key="daily_grid_import",
+            name="Daily Grid Import",
+            icon="mdi:transmission-tower-import",
+            power_key="net_grid_import",
+        )
+
+
+class SentinelDailyGridExportSensor(SentinelDailyEnergySensor):
+    """Daily kWh exported to the grid."""
+
+    def __init__(self, coordinator):
+        super().__init__(
+            coordinator,
+            key="daily_grid_export",
+            name="Daily Grid Export",
+            icon="mdi:transmission-tower-export",
+            power_key="net_grid_export",
+        )

@@ -1,6 +1,6 @@
 """Sentinel Energy Manager coordinator."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -35,15 +36,27 @@ from .const import (
     CONF_BACKUP_SOC_2,
     CONF_EXPORT_POWER_2,
     CONF_IMPORT_POWER_2,
+    CONF_CAPACITY_KWH,
     OPT_REBALANCE_START_THRESHOLD,
     OPT_REBALANCE_STOP_THRESHOLD,
     OPT_REBALANCE_TRANSFER_RATE,
+    OPT_MORNING_FLOOR_SOC,
+    OPT_MORNING_CHARGE_RATE,
+    OPT_TYPICAL_OVERNIGHT_LOAD,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
+    DEFAULT_MORNING_FLOOR_SOC,
+    DEFAULT_MORNING_CHARGE_RATE,
+    DEFAULT_TYPICAL_OVERNIGHT_LOAD,
+    DEFAULT_BATTERY_CAPACITY_KWH,
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
+    MORNING_FLOOR_START_HOUR,
+    MORNING_FLOOR_END_HOUR,
+    LOAD_POWER_1,
+    LOAD_POWER_2,
     MODE_MAXIMUM_SELF_CONSUMPTION,
     MODE_COMMAND_CHARGING_GRID_FIRST,
     MODE_COMMAND_DISCHARGING_PV_FIRST,
@@ -103,6 +116,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 OPT_REBALANCE_TRANSFER_RATE,
                 data.get(OPT_REBALANCE_TRANSFER_RATE, DEFAULT_REBALANCE_TRANSFER_RATE),
             ),
+            OPT_MORNING_FLOOR_SOC: options.get(
+                OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
+            ),
+            OPT_MORNING_CHARGE_RATE: options.get(
+                OPT_MORNING_CHARGE_RATE, DEFAULT_MORNING_CHARGE_RATE,
+            ),
+            OPT_TYPICAL_OVERNIGHT_LOAD: options.get(
+                OPT_TYPICAL_OVERNIGHT_LOAD, DEFAULT_TYPICAL_OVERNIGHT_LOAD,
+            ),
         }
 
     async def async_set_option(self, key: str, value: Any) -> None:
@@ -160,8 +182,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 await self._async_apply_failsafe()
                 self._current_mode = MODE_FAILSAFE
             else:
+                mean_soc = (soc_1 + soc_2) / 2
                 new_mode = self._evaluate_priority(
-                    soc_1, soc_2, backup_soc_1, backup_soc_2,
+                    soc_1, soc_2, backup_soc_1, backup_soc_2, mean_soc,
                 )
 
                 if new_mode != self._current_mode:
@@ -176,17 +199,24 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             net_grid_power = net_grid_export - net_grid_import
 
             soc_diff = abs((soc_1 or 0) - (soc_2 or 0))
+            mean_soc = ((soc_1 or 0) + (soc_2 or 0)) / 2
+            predicted_6am = self._predict_6am_soc(mean_soc)
 
             return {
                 "soc_1": soc_1,
                 "soc_2": soc_2,
                 "soc_diff": soc_diff,
+                "mean_soc": mean_soc,
+                "predicted_6am_soc": round(predicted_6am, 1),
                 "net_grid_power": net_grid_power,
                 "net_grid_import": net_grid_import,
                 "net_grid_export": net_grid_export,
                 "active_mode": self._current_mode,
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,
+                "grid_charging_active": self._current_mode in (
+                    MODE_MORNING_FLOOR, MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
+                ),
             }
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
@@ -198,6 +228,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         soc_2: float,
         backup_soc_1: float,
         backup_soc_2: float,
+        mean_soc: float,
     ) -> str:
         """Evaluate priority and return the highest-priority valid mode."""
         # Priority 1: FAILSAFE — already handled in _async_update_data
@@ -222,9 +253,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             if self._check_rebalance_conditions(soc_1, soc_2, backup_soc_1, backup_soc_2):
                 return MODE_REBALANCE
 
-        # Priority 6: MORNING_FLOOR (stub)
+        # Priority 6: MORNING_FLOOR
         if self.is_mode_enabled(MODE_MORNING_FLOOR):
-            if self._check_morning_floor_conditions():
+            if self._check_morning_floor_conditions(mean_soc):
                 return MODE_MORNING_FLOOR
 
         # Priority 7: SELF_CONSUMPTION (always valid)
@@ -276,8 +307,66 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         return True
 
-    def _check_morning_floor_conditions(self) -> bool:
+    def _check_morning_floor_conditions(self, mean_soc: float) -> bool:
+        """Check if MORNING_FLOOR conditions are met."""
+        now = dt_util.now()
+        hour = now.hour
+
+        # Only active in overnight window
+        if not (hour >= MORNING_FLOOR_START_HOUR or hour < MORNING_FLOOR_END_HOUR):
+            return False
+
+        # Already above floor — no need to charge
+        floor_soc = self._opts[OPT_MORNING_FLOOR_SOC]
+        if mean_soc >= floor_soc:
+            return False
+
+        # Predict 6am SOC — if already below floor, definitely charge
+        predicted = self._predict_6am_soc(mean_soc)
+        if predicted < floor_soc:
+            return True
+
         return False
+
+    def _predict_6am_soc(self, mean_soc: float) -> float:
+        """Predict SOC at 6am based on current SOC and estimated load."""
+        now = dt_util.now()
+        target = now.replace(hour=MORNING_FLOOR_END_HOUR, minute=0, second=0, microsecond=0)
+        if now.hour >= MORNING_FLOOR_START_HOUR:
+            target += timedelta(days=1)
+
+        hours_until_6am = max(0.0, (target - now).total_seconds() / 3600)
+        if hours_until_6am == 0:
+            return mean_soc
+
+        # Try live load sensors first
+        load_kw = self._get_live_load_kw()
+
+        if load_kw is not None and load_kw > 0:
+            drain_kwh = load_kw * hours_until_6am
+        else:
+            # Fallback: spread typical overnight load across the full 8-hour window
+            typical = self._opts[OPT_TYPICAL_OVERNIGHT_LOAD]
+            overnight_hours = 24 - MORNING_FLOOR_START_HOUR + MORNING_FLOOR_END_HOUR  # 8
+            drain_kwh = typical * (hours_until_6am / overnight_hours)
+
+        capacity = self.config_entry.data.get(CONF_CAPACITY_KWH, DEFAULT_BATTERY_CAPACITY_KWH)
+        total_capacity = capacity * 2  # two batteries
+        soc_drain = (drain_kwh / total_capacity) * 100
+
+        return max(0.0, mean_soc - soc_drain)
+
+    def _get_live_load_kw(self) -> float | None:
+        """Read live load from both Sigen plants (combined kW)."""
+        load_1 = self._get_state_float(LOAD_POWER_1)
+        load_2 = self._get_state_float(LOAD_POWER_2)
+        if load_1 is not None and load_2 is not None:
+            return load_1 + load_2
+        if load_1 is not None:
+            return load_1
+        if load_2 is not None:
+            return load_2
+        return None
 
     async def _apply_mode(self, mode: str) -> None:
         """Apply the specified mode."""
@@ -285,6 +374,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._async_apply_failsafe()
         elif mode == MODE_REBALANCE:
             await self._async_apply_rebalance()
+        elif mode == MODE_MORNING_FLOOR:
+            await self._async_apply_morning_floor()
         elif mode == MODE_SELF_CONSUMPTION:
             await self._async_apply_self_consumption()
         else:
@@ -322,6 +413,17 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], 0)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], 0)
+
+    async def _async_apply_morning_floor(self) -> None:
+        """MORNING_FLOOR: charge both batteries from grid at configured rate."""
+        config = self.config_entry.data
+        charge_rate = self._opts[OPT_MORNING_CHARGE_RATE]
+
+        await self._set_both_mode(MODE_COMMAND_CHARGING_GRID_FIRST)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], charge_rate)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], charge_rate)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], 0)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], 0)
 
     async def _async_apply_self_consumption(self) -> None:
         """SELF_CONSUMPTION: both batteries to normal mode, restore limits."""

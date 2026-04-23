@@ -22,6 +22,7 @@ async def async_setup_entry(
     sensors = [
         SentinelFailsafeActiveSensor(coordinator),
         SentinelRebalancingActiveSensor(coordinator),
+        SentinelGridChargingActiveSensor(coordinator),
     ]
 
     async_add_entities(sensors)
@@ -59,3 +60,20 @@ class SentinelRebalancingActiveSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return True if rebalancing is active."""
         return self.coordinator.data.get("rebalancing_active", False)
+
+
+class SentinelGridChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if grid charging is active."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_grid_charging_active"
+        self._attr_name = "Grid Charging Active"
+        self._attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if grid charging is active."""
+        return self.coordinator.data.get("grid_charging_active", False)
