@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import PERCENTAGE, UnitOfPower, UnitOfEnergy
+from homeassistant.const import PERCENTAGE, UnitOfPower
 
 from .const import (
     DOMAIN,
@@ -20,16 +20,12 @@ from .const import (
     OPT_REBALANCE_SOLAR_THRESHOLD,
     OPT_REBALANCE_SOLAR_OVERRIDE_SOC,
     OPT_MORNING_FLOOR_SOC,
-    OPT_MORNING_CHARGE_RATE,
-    OPT_TYPICAL_OVERNIGHT_LOAD,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
     DEFAULT_REBALANCE_SOLAR_THRESHOLD,
     DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
     DEFAULT_MORNING_FLOOR_SOC,
-    DEFAULT_MORNING_CHARGE_RATE,
-    DEFAULT_TYPICAL_OVERNIGHT_LOAD,
 )
 
 
@@ -104,27 +100,6 @@ NUMBER_DESCRIPTIONS = [
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_MORNING_FLOOR_SOC,
     ),
-    SentinelNumberDescription(
-        key="morning_charge_rate",
-        name="Morning Charge Rate",
-        icon="mdi:battery-charging",
-        native_min_value=0.5,
-        native_max_value=7.0,
-        native_step=0.5,
-        native_unit_of_measurement=UnitOfPower.KILO_WATT,
-        option_key=OPT_MORNING_CHARGE_RATE,
-    ),
-    SentinelNumberDescription(
-        key="typical_overnight_load",
-        name="Typical Overnight Load",
-        icon="mdi:home-lightning-bolt",
-        native_min_value=1.0,
-        native_max_value=30.0,
-        native_step=0.5,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        mode=NumberMode.BOX,
-        option_key=OPT_TYPICAL_OVERNIGHT_LOAD,
-    ),
 ]
 
 
@@ -166,8 +141,6 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_REBALANCE_SOLAR_THRESHOLD: DEFAULT_REBALANCE_SOLAR_THRESHOLD,
         OPT_REBALANCE_SOLAR_OVERRIDE_SOC: DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
         OPT_MORNING_FLOOR_SOC: DEFAULT_MORNING_FLOOR_SOC,
-        OPT_MORNING_CHARGE_RATE: DEFAULT_MORNING_CHARGE_RATE,
-        OPT_TYPICAL_OVERNIGHT_LOAD: DEFAULT_TYPICAL_OVERNIGHT_LOAD,
     }
 
     @property

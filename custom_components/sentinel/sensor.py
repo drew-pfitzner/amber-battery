@@ -10,8 +10,9 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower, UnitOfEnergy, PERCENTAGE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
@@ -31,7 +32,6 @@ async def async_setup_entry(
         SentinelActiveModeSensor(coordinator),
         SentinelNetGridPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
-        SentinelPredicted6amSocSensor(coordinator),
         SentinelCombinedPvPowerSensor(coordinator),
         SentinelDailyGridImportSensor(coordinator),
         SentinelDailyGridExportSensor(coordinator),
@@ -97,25 +97,6 @@ class SentinelMeanBatterySocSensor(CoordinatorEntity, SensorEntity):
         return None
 
 
-class SentinelPredicted6amSocSensor(CoordinatorEntity, SensorEntity):
-    """Sensor showing predicted SOC at 6am."""
-
-    def __init__(self, coordinator):
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{DOMAIN}_predicted_soc_at_6am"
-        self._attr_name = "Predicted SOC at 6am"
-        self._attr_native_unit_of_measurement = PERCENTAGE
-        self._attr_icon = "mdi:crystal-ball"
-        self._attr_device_info = coordinator.device_info
-        self._attr_suggested_display_precision = 1
-
-    @property
-    def native_value(self) -> float | None:
-        """Return predicted 6am SOC."""
-        return self.coordinator.data.get("predicted_6am_soc")
-
-
 class SentinelCombinedPvPowerSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing combined PV production from both plants."""
 
@@ -136,16 +117,16 @@ class SentinelCombinedPvPowerSensor(CoordinatorEntity, SensorEntity):
         return self.coordinator.data.get("combined_pv_power")
 
 
-class SentinelDailyEnergySensor(CoordinatorEntity, SensorEntity):
+class SentinelDailyEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """Base class for daily energy accumulation sensors.
 
     Integrates instantaneous power (kW) over time to produce daily kWh.
-    Resets at midnight local time.
+    Resets at midnight local time. Survives restarts via RestoreEntity.
     """
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator, key: str, name: str, icon: str, power_key: str):
@@ -158,30 +139,59 @@ class SentinelDailyEnergySensor(CoordinatorEntity, SensorEntity):
         self._power_key = power_key
         self._accumulated_kwh: float = 0.0
         self._last_update: datetime | None = None
-        self._last_reset: datetime | None = None
+        self._last_reset_date: str | None = None
 
-    @property
-    def native_value(self) -> float:
-        """Return accumulated energy today."""
+    async def async_added_to_hass(self) -> None:
+        """Restore state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in (None, "unknown", "unavailable"):
+            try:
+                restored_value = float(last_state.state)
+                restored_date = (last_state.attributes or {}).get("last_reset_date")
+                today = dt_util.now().date().isoformat()
+                if restored_date == today:
+                    self._accumulated_kwh = restored_value
+                    self._last_reset_date = today
+                    _LOGGER.debug(
+                        "Restored %s: %.3f kWh for %s",
+                        self._attr_name, restored_value, today,
+                    )
+                else:
+                    self._accumulated_kwh = 0.0
+                    self._last_reset_date = today
+            except (ValueError, TypeError):
+                self._last_reset_date = dt_util.now().date().isoformat()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Accumulate energy on each coordinator update."""
         now = dt_util.now()
-        # Reset at midnight
-        if self._last_reset is None or self._last_reset.date() < now.date():
+        today = now.date().isoformat()
+
+        if self._last_reset_date != today:
             self._accumulated_kwh = 0.0
-            self._last_reset = now
+            self._last_reset_date = today
+            self._last_update = None
 
         power_kw = self.coordinator.data.get(self._power_key)
         if power_kw is not None and power_kw > 0 and self._last_update is not None:
             elapsed_hours = (now - self._last_update).total_seconds() / 3600
-            if 0 < elapsed_hours < 0.1:  # Sanity: skip if gap > 6 min
+            if 0 < elapsed_hours < 0.1:  # Skip if gap > 6 min
                 self._accumulated_kwh += power_kw * elapsed_hours
 
         self._last_update = now
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> float:
+        """Return accumulated energy today."""
         return round(self._accumulated_kwh, 3)
 
     @property
-    def last_reset(self) -> datetime | None:
-        """Return the time of the last reset (midnight)."""
-        return self._last_reset
+    def extra_state_attributes(self) -> dict:
+        """Store reset date for restore logic."""
+        return {"last_reset_date": self._last_reset_date}
 
 
 class SentinelDailyGridImportSensor(SentinelDailyEnergySensor):

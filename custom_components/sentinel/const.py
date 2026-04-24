@@ -59,8 +59,6 @@ OPT_REBALANCE_SOLAR_OVERRIDE_SOC = "rebalance_solar_override_soc"
 
 # Options keys — morning floor
 OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
-OPT_MORNING_CHARGE_RATE = "morning_charge_rate"
-OPT_TYPICAL_OVERNIGHT_LOAD = "typical_overnight_load"
 
 # Default values
 DEFAULT_BATTERY_CAPACITY_KWH = 24.5
@@ -70,15 +68,16 @@ DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
 DEFAULT_REBALANCE_SOLAR_THRESHOLD = 0.5  # kW combined PV to suppress rebalancing
 DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC = 90.0  # % — rebalance despite solar if higher battery above this
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
-DEFAULT_MORNING_CHARGE_RATE = 2.0        # kW
-DEFAULT_TYPICAL_OVERNIGHT_LOAD = 5.0     # kWh total overnight
+DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 
 # Morning floor time window
-MORNING_FLOOR_START_HOUR = 22  # 10 PM
-MORNING_FLOOR_END_HOUR = 6    # 6 AM
+MORNING_FLOOR_START_HOUR = 22   # 10 PM
+MORNING_FLOOR_START_MINUTE = 10
+MORNING_FLOOR_END_HOUR = 5      # 5 AM
+MORNING_FLOOR_END_MINUTE = 50
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_load_power"
