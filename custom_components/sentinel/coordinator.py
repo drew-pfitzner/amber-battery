@@ -57,6 +57,12 @@ from .const import (
     MORNING_FLOOR_END_HOUR,
     LOAD_POWER_1,
     LOAD_POWER_2,
+    PV_POWER_1,
+    PV_POWER_2,
+    OPT_REBALANCE_SOLAR_THRESHOLD,
+    OPT_REBALANCE_SOLAR_OVERRIDE_SOC,
+    DEFAULT_REBALANCE_SOLAR_THRESHOLD,
+    DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
     MODE_MAXIMUM_SELF_CONSUMPTION,
     MODE_COMMAND_CHARGING_GRID_FIRST,
     MODE_COMMAND_DISCHARGING_PV_FIRST,
@@ -124,6 +130,12 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_TYPICAL_OVERNIGHT_LOAD: options.get(
                 OPT_TYPICAL_OVERNIGHT_LOAD, DEFAULT_TYPICAL_OVERNIGHT_LOAD,
+            ),
+            OPT_REBALANCE_SOLAR_THRESHOLD: options.get(
+                OPT_REBALANCE_SOLAR_THRESHOLD, DEFAULT_REBALANCE_SOLAR_THRESHOLD,
+            ),
+            OPT_REBALANCE_SOLAR_OVERRIDE_SOC: options.get(
+                OPT_REBALANCE_SOLAR_OVERRIDE_SOC, DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
             ),
         }
 
@@ -201,6 +213,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             soc_diff = abs((soc_1 or 0) - (soc_2 or 0))
             mean_soc = ((soc_1 or 0) + (soc_2 or 0)) / 2
             predicted_6am = self._predict_6am_soc(mean_soc)
+            combined_pv = self._get_combined_pv_kw()
 
             return {
                 "soc_1": soc_1,
@@ -211,6 +224,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "net_grid_power": net_grid_power,
                 "net_grid_import": net_grid_import,
                 "net_grid_export": net_grid_export,
+                "combined_pv_power": combined_pv,
                 "active_mode": self._current_mode,
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,
@@ -305,6 +319,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if charge_soc >= DEFAULT_MAX_CHARGE_SOC:
             return False
 
+        # Solar-aware gate: skip rebalance if solar is significant
+        # unless the fuller battery is near full (solar would curtail anyway)
+        solar_kw = self._get_combined_pv_kw() or 0
+        solar_threshold = self._opts[OPT_REBALANCE_SOLAR_THRESHOLD]
+        override_soc = self._opts[OPT_REBALANCE_SOLAR_OVERRIDE_SOC]
+
+        if solar_kw > solar_threshold and discharge_soc < override_soc:
+            return False
+
         return True
 
     def _check_morning_floor_conditions(self, mean_soc: float) -> bool:
@@ -355,6 +378,18 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         soc_drain = (drain_kwh / total_capacity) * 100
 
         return max(0.0, mean_soc - soc_drain)
+
+    def _get_combined_pv_kw(self) -> float | None:
+        """Read combined PV production from both Sigen plants (kW)."""
+        pv_1 = self._get_state_float(PV_POWER_1)
+        pv_2 = self._get_state_float(PV_POWER_2)
+        if pv_1 is not None and pv_2 is not None:
+            return pv_1 + pv_2
+        if pv_1 is not None:
+            return pv_1
+        if pv_2 is not None:
+            return pv_2
+        return None
 
     def _get_live_load_kw(self) -> float | None:
         """Read live load from both Sigen plants (combined kW)."""

@@ -55,6 +55,7 @@ Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
 - All mode switches default **OFF** for safety — user must enable each mode
 - Failsafe always restores batteries to Maximum Self Consumption + 7 kW limits
 - Rebalance uses hysteresis: start threshold (default 7%) vs stop threshold (default 3%)
+- Rebalance is solar-aware: suppressed when combined PV > threshold (default 0.5 kW) unless fuller battery SOC > override (default 90%)
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
 
 ### ForecastEngine (Phase 2+)
@@ -71,12 +72,14 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - **Amber sensors:** `sensor.<site>_general_price`, `binary_sensor.<site>_price_spike`
 - **Solcast:** `sensor.solcast_pv_solar_forecast_today`, `sensor.solcast_pv_solar_forecast_tomorrow`
 - **Sigen load:** `sensor.sigen_plant_load_power`, `sensor.sigen_plant_2_load_power` (hardcoded, not configurable)
+- **Sigen PV:** `sensor.sigen_plant_pv_power`, `sensor.sigen_plant_2_pv_power` (hardcoded, not configurable)
 
 ## Build Status
 
 ### Phase 1 — Coordinator + Rebalancing (DEPLOYED 2026-04-22)
 - [x] Coordinator, priority engine, rebalancing, failsafe, self-consumption
 - [x] All entity files, 6-step config flow, deployed and tested
+- [x] Solar-aware rebalancing: suppress during solar, override when battery near full
 - [ ] Verify rebalance stop condition restores SELF_CONSUMPTION
 
 ### Phase 2 — Morning Floor (IN PROGRESS)

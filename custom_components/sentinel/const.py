@@ -53,6 +53,10 @@ OPT_REBALANCE_START_THRESHOLD = "rebalance_start_threshold"
 OPT_REBALANCE_STOP_THRESHOLD = "rebalance_stop_threshold"
 OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
 
+# Options keys — rebalancing solar awareness
+OPT_REBALANCE_SOLAR_THRESHOLD = "rebalance_solar_threshold"
+OPT_REBALANCE_SOLAR_OVERRIDE_SOC = "rebalance_solar_override_soc"
+
 # Options keys — morning floor
 OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
 OPT_MORNING_CHARGE_RATE = "morning_charge_rate"
@@ -63,6 +67,8 @@ DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
+DEFAULT_REBALANCE_SOLAR_THRESHOLD = 0.5  # kW combined PV to suppress rebalancing
+DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC = 90.0  # % — rebalance despite solar if higher battery above this
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
 DEFAULT_MORNING_CHARGE_RATE = 2.0        # kW
 DEFAULT_TYPICAL_OVERNIGHT_LOAD = 5.0     # kWh total overnight
@@ -77,6 +83,10 @@ MORNING_FLOOR_END_HOUR = 6    # 6 AM
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_load_power"
 LOAD_POWER_2 = "sensor.sigen_plant_2_load_power"
+
+# PV power sensors (not configurable — known Sigen entity IDs)
+PV_POWER_1 = "sensor.sigen_plant_pv_power"
+PV_POWER_2 = "sensor.sigen_plant_2_pv_power"
 
 # Default Sigen entity IDs (pre-fill for user convenience)
 DEFAULT_SOC_1 = "sensor.sigen_plant_battery_state_of_charge"

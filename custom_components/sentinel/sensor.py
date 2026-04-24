@@ -32,6 +32,7 @@ async def async_setup_entry(
         SentinelNetGridPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
         SentinelPredicted6amSocSensor(coordinator),
+        SentinelCombinedPvPowerSensor(coordinator),
         SentinelDailyGridImportSensor(coordinator),
         SentinelDailyGridExportSensor(coordinator),
     ]
@@ -113,6 +114,26 @@ class SentinelPredicted6amSocSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> float | None:
         """Return predicted 6am SOC."""
         return self.coordinator.data.get("predicted_6am_soc")
+
+
+class SentinelCombinedPvPowerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing combined PV production from both plants."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_combined_pv_power"
+        self._attr_name = "Combined PV Power"
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:solar-power"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> float | None:
+        """Return combined PV power."""
+        return self.coordinator.data.get("combined_pv_power")
 
 
 class SentinelDailyEnergySensor(CoordinatorEntity, SensorEntity):
