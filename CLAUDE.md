@@ -87,6 +87,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] MORNING_FLOOR mode: charge both batteries via Grid First when predicted 6am SOC < floor
 - [x] Number entities: floor SOC (40%), charge rate (2 kW), typical overnight load (5 kWh)
 - [x] Predicted 6am SOC sensor, grid charging active binary sensor
+- [x] Fix daily energy sensors: RestoreEntity + TOTAL_INCREASING for energy dashboard
 - [ ] Deploy & test: enable morning floor switch, verify charging activates overnight
 - [ ] Verify stop condition: charging stops when mean SOC >= floor
 
