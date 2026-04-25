@@ -53,10 +53,6 @@ OPT_REBALANCE_START_THRESHOLD = "rebalance_start_threshold"
 OPT_REBALANCE_STOP_THRESHOLD = "rebalance_stop_threshold"
 OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
 
-# Options keys — rebalancing solar awareness
-OPT_REBALANCE_SOLAR_THRESHOLD = "rebalance_solar_threshold"
-OPT_REBALANCE_SOLAR_OVERRIDE_SOC = "rebalance_solar_override_soc"
-
 # Options keys — morning floor
 OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
 
@@ -65,8 +61,6 @@ DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
-DEFAULT_REBALANCE_SOLAR_THRESHOLD = 0.5  # kW combined PV to suppress rebalancing
-DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC = 90.0  # % — rebalance despite solar if higher battery above this
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
 DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
@@ -87,6 +81,11 @@ LOAD_POWER_2 = "sensor.sigen_plant_2_load_power"
 PV_POWER_1 = "sensor.sigen_plant_pv_power"
 PV_POWER_2 = "sensor.sigen_plant_2_pv_power"
 
+# Grid active power sensors (signed: positive = import, negative = export)
+# Used for true net metering calculation across both phases
+GRID_ACTIVE_POWER_1 = "sensor.sigen_plant_grid_active_power"
+GRID_ACTIVE_POWER_2 = "sensor.sigen_plant_2_grid_active_power"
+
 # Default Sigen entity IDs (pre-fill for user convenience)
 DEFAULT_SOC_1 = "sensor.sigen_plant_battery_state_of_charge"
 DEFAULT_MODE_1 = "select.sigen_plant_remote_ems_control_mode"
@@ -106,7 +105,12 @@ DEFAULT_BACKUP_SOC_2 = "number.sigen_plant_2_ess_backup_state_of_charge"
 DEFAULT_EXPORT_POWER_2 = "sensor.sigen_plant_2_grid_export_power"
 DEFAULT_IMPORT_POWER_2 = "sensor.sigen_plant_2_grid_import_power"
 
+# Grid connection status sensors (not configurable — known Sigen entity IDs)
+GRID_CONNECTION_1 = "sensor.sigen_plant_grid_connection_status"
+GRID_CONNECTION_2 = "sensor.sigen_plant_2_grid_connection_status"
+
 # Battery mode names (as they appear in sigen_plant remote_ems_control_mode select)
 MODE_MAXIMUM_SELF_CONSUMPTION = "Maximum Self Consumption"
 MODE_COMMAND_CHARGING_GRID_FIRST = "Command Charging (Grid First)"
+MODE_COMMAND_CHARGING_PV_FIRST = "Command Charging (PV First)"
 MODE_COMMAND_DISCHARGING_PV_FIRST = "Command Discharging (PV First)"

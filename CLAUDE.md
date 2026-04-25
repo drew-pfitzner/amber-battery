@@ -28,13 +28,15 @@ Both phases feed one meter — meter sees **net** of both phases. During rebalan
 | Grid export power | `sensor.sigen_plant_grid_export_power` | `sensor.sigen_plant_2_grid_export_power` |
 | Grid import power | `sensor.sigen_plant_grid_import_power` | `sensor.sigen_plant_2_grid_import_power` |
 | Load power | `sensor.sigen_plant_load_power` | `sensor.sigen_plant_2_load_power` |
+| Grid active power | `sensor.sigen_plant_grid_active_power` | `sensor.sigen_plant_2_grid_active_power` |
+| Grid connection | `sensor.sigen_plant_grid_connection_status` | `sensor.sigen_plant_2_grid_connection_status` |
 
 ### Mode Options (select entities)
 
 - `Maximum Self Consumption` ← normal/restore state
-- `Command Charging (Grid First)` ← rebalancing charge
-- `Command Discharging (PV First)` ← rebalancing discharge
-- `Command Charging (PV First)` / `Command Discharging (ESS First)` / `Standby` / `PCS Remote Control`
+- `Command Charging (PV First)` ← rebalancing charge (prioritises solar)
+- `Command Discharging (PV First)` ← rebalancing discharge (prioritises solar)
+- `Command Charging (Grid First)` / `Command Discharging (ESS First)` / `Standby` / `PCS Remote Control`
 
 ## Sentinel Architecture
 
@@ -55,7 +57,9 @@ Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
 - All mode switches default **OFF** for safety — user must enable each mode
 - Failsafe always restores batteries to Maximum Self Consumption + 7 kW limits
 - Rebalance uses hysteresis: start threshold (default 7%) vs stop threshold (default 3%)
-- Rebalance is solar-aware: suppressed when combined PV > threshold (default 0.5 kW) unless fuller battery SOC > override (default 90%)
+- Rebalance uses PV First modes for both charge and discharge — solar is automatically prioritised, no suppression needed
+- Rebalance requires grid connection on both plants (disabled during grid outage)
+- Daily energy sensors use signed `grid_active_power` (net across both phases), NOT per-plant `grid_import_power`/`grid_export_power` which double-count during rebalancing
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
 
 ### ForecastEngine (Phase 2+)
@@ -79,7 +83,8 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 ### Phase 1 — Coordinator + Rebalancing (DEPLOYED 2026-04-22)
 - [x] Coordinator, priority engine, rebalancing, failsafe, self-consumption
 - [x] All entity files, 6-step config flow, deployed and tested
-- [x] Solar-aware rebalancing: suppress during solar, override when battery near full
+- [x] PV First rebalancing: uses PV First modes so solar is automatically prioritised
+- [x] Grid connection check: rebalancing disabled when either plant is off-grid
 - [ ] Verify rebalance stop condition restores SELF_CONSUMPTION
 
 ### Phase 2 — Morning Floor (IN PROGRESS)

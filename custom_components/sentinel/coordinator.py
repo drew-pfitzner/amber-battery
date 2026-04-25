@@ -54,12 +54,12 @@ from .const import (
     MORNING_FLOOR_END_MINUTE,
     PV_POWER_1,
     PV_POWER_2,
-    OPT_REBALANCE_SOLAR_THRESHOLD,
-    OPT_REBALANCE_SOLAR_OVERRIDE_SOC,
-    DEFAULT_REBALANCE_SOLAR_THRESHOLD,
-    DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
+    GRID_ACTIVE_POWER_1,
+    GRID_ACTIVE_POWER_2,
+    GRID_CONNECTION_1,
+    GRID_CONNECTION_2,
     MODE_MAXIMUM_SELF_CONSUMPTION,
-    MODE_COMMAND_CHARGING_GRID_FIRST,
+    MODE_COMMAND_CHARGING_PV_FIRST,
     MODE_COMMAND_DISCHARGING_PV_FIRST,
 )
 
@@ -119,12 +119,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_MORNING_FLOOR_SOC: options.get(
                 OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
-            ),
-            OPT_REBALANCE_SOLAR_THRESHOLD: options.get(
-                OPT_REBALANCE_SOLAR_THRESHOLD, DEFAULT_REBALANCE_SOLAR_THRESHOLD,
-            ),
-            OPT_REBALANCE_SOLAR_OVERRIDE_SOC: options.get(
-                OPT_REBALANCE_SOLAR_OVERRIDE_SOC, DEFAULT_REBALANCE_SOLAR_OVERRIDE_SOC,
             ),
         }
 
@@ -197,9 +191,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
                 await self._apply_mode(self._current_mode)
 
-            # Calculate net grid power
-            net_grid_export = max(0, export_power_1 + export_power_2)
-            net_grid_import = max(0, import_power_1 + import_power_2)
+            # Calculate net grid power using signed grid_active_power sensors
+            # These are per-plant signed values (positive = import, negative = export).
+            # Summing across both phases gives the true net as seen by the meter,
+            # so rebalancing (one imports, one exports equally) nets to ~0.
+            gap_1 = self._get_state_float(GRID_ACTIVE_POWER_1) or 0
+            gap_2 = self._get_state_float(GRID_ACTIVE_POWER_2) or 0
+            net_grid = gap_1 + gap_2
+            net_grid_import = max(0, net_grid)
+            net_grid_export = max(0, -net_grid)
             net_grid_power = net_grid_export - net_grid_import
 
             soc_diff = abs((soc_1 or 0) - (soc_2 or 0))
@@ -283,6 +283,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         backup_soc_2: float,
     ) -> bool:
         """Check if REBALANCE conditions are met."""
+        # Require grid connection on both plants
+        if not self._is_grid_connected():
+            return False
+
         soc_diff = abs(soc_1 - soc_2)
 
         # Use stop threshold if already rebalancing, start threshold otherwise
@@ -310,15 +314,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if charge_soc >= DEFAULT_MAX_CHARGE_SOC:
             return False
 
-        # Solar-aware gate: skip rebalance if solar is significant
-        # unless the fuller battery is near full (solar would curtail anyway)
-        solar_kw = self._get_combined_pv_kw() or 0
-        solar_threshold = self._opts[OPT_REBALANCE_SOLAR_THRESHOLD]
-        override_soc = self._opts[OPT_REBALANCE_SOLAR_OVERRIDE_SOC]
-
-        if solar_kw > solar_threshold and discharge_soc < override_soc:
-            return False
-
         return True
 
     def _check_morning_floor_conditions(self, mean_soc: float) -> bool:
@@ -330,6 +325,16 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         # Window spans midnight: active if past start OR before end
         return t >= start or t < end
+
+    def _is_grid_connected(self) -> bool:
+        """Check if both plants are connected to the grid."""
+        state_1 = self.hass.states.get(GRID_CONNECTION_1)
+        state_2 = self.hass.states.get(GRID_CONNECTION_2)
+        if not state_1 or not state_2:
+            return False
+        if state_1.state in ("unknown", "unavailable") or state_2.state in ("unknown", "unavailable"):
+            return False
+        return state_1.state == "On Grid" and state_2.state == "On Grid"
 
     def _get_combined_pv_kw(self) -> float | None:
         """Read combined PV production from both Sigen plants (kW)."""
@@ -375,7 +380,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if soc_1 >= soc_2:
             # Plant 1 discharges, Plant 2 charges
             await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_DISCHARGING_PV_FIRST)
-            await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_CHARGING_GRID_FIRST)
+            await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_CHARGING_PV_FIRST)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], 0)
@@ -383,7 +388,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         else:
             # Plant 2 discharges, Plant 1 charges
             await self._call_service_set_mode(config[CONF_MODE_2], MODE_COMMAND_DISCHARGING_PV_FIRST)
-            await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_CHARGING_GRID_FIRST)
+            await self._call_service_set_mode(config[CONF_MODE_1], MODE_COMMAND_CHARGING_PV_FIRST)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], 0)
