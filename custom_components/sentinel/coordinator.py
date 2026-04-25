@@ -18,6 +18,7 @@ from .const import (
     MODE_OUTAGE_PREP,
     MODE_GRID_CHARGE,
     MODE_REBALANCE,
+    MODE_SOLAR_CURTAIL,
     MODE_MORNING_FLOOR,
     MODE_SELF_CONSUMPTION,
     CONF_SOC_1,
@@ -39,7 +40,9 @@ from .const import (
     OPT_REBALANCE_START_THRESHOLD,
     OPT_REBALANCE_STOP_THRESHOLD,
     OPT_REBALANCE_TRANSFER_RATE,
+    OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     OPT_MORNING_FLOOR_SOC,
+    DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
@@ -60,6 +63,7 @@ from .const import (
     GRID_ACTIVE_POWER_2,
     GRID_CONNECTION_1,
     GRID_CONNECTION_2,
+    AMBER_FEED_IN_PRICE,
     MODE_MAXIMUM_SELF_CONSUMPTION,
     MODE_COMMAND_CHARGING_PV_FIRST,
     MODE_COMMAND_DISCHARGING_PV_FIRST,
@@ -87,6 +91,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         # Mode enable flags — stored in memory, persisted to options
         self._mode_enabled = {
             MODE_REBALANCE: config_entry.options.get("rebalance_enabled", False),
+            MODE_SOLAR_CURTAIL: config_entry.options.get("solar_curtail_enabled", False),
             MODE_MORNING_FLOOR: config_entry.options.get("morning_floor_enabled", False),
             MODE_GRID_CHARGE: config_entry.options.get("grid_charge_enabled", False),
             MODE_SPIKE_EXPORT: config_entry.options.get("spike_export_enabled", False),
@@ -118,6 +123,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             OPT_REBALANCE_TRANSFER_RATE: options.get(
                 OPT_REBALANCE_TRANSFER_RATE,
                 data.get(OPT_REBALANCE_TRANSFER_RATE, DEFAULT_REBALANCE_TRANSFER_RATE),
+            ),
+            OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: options.get(
+                OPT_SOLAR_CURTAIL_PRICE_THRESHOLD, DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
             ),
             OPT_MORNING_FLOOR_SOC: options.get(
                 OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
@@ -230,6 +238,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "net_battery_charge": net_battery_charge,
                 "active_mode": self._current_mode,
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
+                "solar_curtail_active": self._current_mode == MODE_SOLAR_CURTAIL,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,
                 "morning_floor_active": self._current_mode == MODE_MORNING_FLOOR,
                 "grid_charging_active": self._current_mode in (
@@ -271,12 +280,17 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             if self._check_rebalance_conditions(soc_1, soc_2, backup_soc_1, backup_soc_2):
                 return MODE_REBALANCE
 
-        # Priority 6: MORNING_FLOOR
+        # Priority 6: SOLAR_CURTAIL
+        if self.is_mode_enabled(MODE_SOLAR_CURTAIL):
+            if self._check_solar_curtail_conditions():
+                return MODE_SOLAR_CURTAIL
+
+        # Priority 7: MORNING_FLOOR
         if self.is_mode_enabled(MODE_MORNING_FLOOR):
             if self._check_morning_floor_conditions(mean_soc):
                 return MODE_MORNING_FLOOR
 
-        # Priority 7: SELF_CONSUMPTION (always valid)
+        # Priority 8: SELF_CONSUMPTION (always valid)
         return MODE_SELF_CONSUMPTION
 
     def _check_spike_export_conditions(self) -> bool:
@@ -287,6 +301,22 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
     def _check_grid_charge_conditions(self) -> bool:
         return False
+
+    def _check_solar_curtail_conditions(self) -> bool:
+        """Check if SOLAR_CURTAIL conditions are met (low feed-in price + solar producing)."""
+        feed_in_price = self._get_state_float(AMBER_FEED_IN_PRICE)
+        if feed_in_price is None:
+            return False
+
+        threshold = self._opts[OPT_SOLAR_CURTAIL_PRICE_THRESHOLD]
+        if feed_in_price >= threshold:
+            return False
+
+        combined_pv = self._get_combined_pv_kw()
+        if combined_pv is None or combined_pv <= 0:
+            return False
+
+        return True
 
     def _check_rebalance_conditions(
         self,
@@ -367,6 +397,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._async_apply_failsafe()
         elif mode == MODE_REBALANCE:
             await self._async_apply_rebalance()
+        elif mode == MODE_SOLAR_CURTAIL:
+            await self._async_apply_solar_curtail()
         elif mode == MODE_MORNING_FLOOR:
             await self._async_apply_morning_floor()
         elif mode == MODE_SELF_CONSUMPTION:
@@ -406,6 +438,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], transfer_rate)
             await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], 0)
             await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], 0)
+
+    async def _async_apply_solar_curtail(self) -> None:
+        """SOLAR_CURTAIL: block grid export while keeping self-consumption."""
+        config = self.config_entry.data
+        await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], 0)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], 0)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
     async def _async_apply_morning_floor(self) -> None:
         """MORNING_FLOOR: raise backup SOC to floor, stay in self-consumption.

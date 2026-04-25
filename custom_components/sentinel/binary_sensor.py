@@ -22,6 +22,7 @@ async def async_setup_entry(
     sensors = [
         SentinelFailsafeActiveSensor(coordinator),
         SentinelRebalancingActiveSensor(coordinator),
+        SentinelSolarCurtailActiveSensor(coordinator),
         SentinelMorningFloorActiveSensor(coordinator),
         SentinelGridChargingActiveSensor(coordinator),
     ]
@@ -61,6 +62,24 @@ class SentinelRebalancingActiveSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return True if rebalancing is active."""
         return self.coordinator.data.get("rebalancing_active", False)
+
+
+class SentinelSolarCurtailActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if solar curtail is active."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_solar_curtail_active"
+        self._attr_name = "Solar Curtail Active"
+        self._attr_device_class = BinarySensorDeviceClass.RUNNING
+        self._attr_icon = "mdi:solar-power-variant-outline"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if solar curtail is active."""
+        return self.coordinator.data.get("solar_curtail_active", False)
 
 
 class SentinelMorningFloorActiveSensor(CoordinatorEntity, BinarySensorEntity):

@@ -41,7 +41,7 @@ Both phases feed one meter — meter sees **net** of both phases. During rebalan
 
 ## Sentinel Architecture
 
-Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
+Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
 
 | Priority | Mode | Trigger |
 |---|---|---|
@@ -50,8 +50,9 @@ Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
 | 3 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
 | 4 | **GRID_CHARGE** | Amber price < threshold + solar won't cover + inside window → grid charge |
 | 5 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
-| 6 | **MORNING_FLOOR** | 22:00–06:00 + predicted 6am SOC < floor → gentle overnight charge |
-| 7 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
+| 6 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
+| 7 | **MORNING_FLOOR** | 22:00–06:00 + predicted 6am SOC < floor → gentle overnight charge |
+| 8 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
 
 ### Key Design Decisions
 
@@ -60,6 +61,7 @@ Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
 - Rebalance uses hysteresis: start threshold (default 7%) vs stop threshold (default 3%)
 - Rebalance uses PV First modes for both charge and discharge — solar is automatically prioritised, no suppression needed
 - Rebalance requires grid connection on both plants (disabled during grid outage)
+- Solar curtail sets export limit to 0 kW when Amber feed-in price < threshold — inverters curtail solar to match load + battery charging only
 - Daily energy sensors use signed `grid_active_power` (net across both phases), NOT per-plant `grid_import_power`/`grid_export_power` which double-count during rebalancing
 - Battery sensors use `battery_power` from both plants (already in kW); sign convention TBC (assumed positive = discharging)
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
@@ -75,7 +77,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 ### Data Sources
 
 - **Amber forecasts:** via action `amberelectric.get_forecasts` (config_entry="Hill End", channel_type="general"). Returns 5-min intervals with `per_kwh` (dollars), `spot_per_kwh`, `spike_status`, `descriptor`, `start_time` (UTC), `nem_date` (AEST). Called with `return_response=True`.
-- **Amber sensors:** `sensor.<site>_general_price`, `binary_sensor.<site>_price_spike`
+- **Amber sensors:** `sensor.<site>_general_price`, `sensor.<site>_feed_in_price`, `binary_sensor.<site>_price_spike`
 - **Solcast:** `sensor.solcast_pv_solar_forecast_today`, `sensor.solcast_pv_solar_forecast_tomorrow`
 - **Sigen load:** `sensor.sigen_plant_load_power`, `sensor.sigen_plant_2_load_power` (hardcoded, not configurable)
 - **Sigen PV:** `sensor.sigen_plant_pv_power`, `sensor.sigen_plant_2_pv_power` (hardcoded, not configurable)
@@ -99,6 +101,12 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [ ] Verify battery power sign convention (positive = discharging assumed)
 - [ ] Deploy & test: enable morning floor switch, verify charging activates overnight
 - [ ] Verify stop condition: charging stops when mean SOC >= floor
+
+### Solar Curtail (COMPLETE)
+- [x] SOLAR_CURTAIL mode: block export when Amber feed-in price < configurable threshold
+- [x] Switch entity, price threshold number entity ($0.01 default), binary sensor
+- [x] Uses `sensor.hill_end_feed_in_price` + combined PV power > 0 as triggers
+- [ ] Deploy & test: enable switch, verify export blocked when feed-in < $0.01
 
 ### Phase 3 — Amber Grid Charging
 - [ ] Amber price parsing, GRID_CHARGE mode, charge window selects

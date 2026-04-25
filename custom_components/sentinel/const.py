@@ -9,6 +9,7 @@ MODE_SPIKE_EXPORT = "SPIKE_EXPORT"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
+MODE_SOLAR_CURTAIL = "SOLAR_CURTAIL"
 MODE_MORNING_FLOOR = "MORNING_FLOOR"
 MODE_SELF_CONSUMPTION = "SELF_CONSUMPTION"
 
@@ -53,6 +54,9 @@ OPT_REBALANCE_START_THRESHOLD = "rebalance_start_threshold"
 OPT_REBALANCE_STOP_THRESHOLD = "rebalance_stop_threshold"
 OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
 
+# Options keys — solar curtail
+OPT_SOLAR_CURTAIL_PRICE_THRESHOLD = "solar_curtail_price_threshold"
+
 # Options keys — morning floor
 OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
 
@@ -62,6 +66,7 @@ DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
+DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below this feed-in price
 DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
@@ -108,6 +113,9 @@ DEFAULT_IMPORT_LIMIT_2 = "number.sigen_plant_2_grid_import_limitation"
 DEFAULT_BACKUP_SOC_2 = "number.sigen_plant_2_ess_backup_state_of_charge"
 DEFAULT_EXPORT_POWER_2 = "sensor.sigen_plant_2_grid_export_power"
 DEFAULT_IMPORT_POWER_2 = "sensor.sigen_plant_2_grid_import_power"
+
+# Amber feed-in price sensor
+AMBER_FEED_IN_PRICE = "sensor.hill_end_feed_in_price"
 
 # Grid connection status sensors (not configurable — known Sigen entity IDs)
 GRID_CONNECTION_1 = "sensor.sigen_plant_grid_connection_status"

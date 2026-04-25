@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN,
     MODE_REBALANCE,
+    MODE_SOLAR_CURTAIL,
     MODE_MORNING_FLOOR,
     MODE_GRID_CHARGE,
     MODE_SPIKE_EXPORT,
@@ -30,6 +31,12 @@ SWITCH_DESCRIPTIONS = [
         name="Enable Rebalancing",
         icon="mdi:scale-balance",
         mode_key=MODE_REBALANCE,
+    ),
+    SentinelSwitchDescription(
+        key="solar_curtail_enabled",
+        name="Enable Solar Curtail",
+        icon="mdi:solar-power-variant-outline",
+        mode_key=MODE_SOLAR_CURTAIL,
     ),
     SentinelSwitchDescription(
         key="morning_floor_enabled",

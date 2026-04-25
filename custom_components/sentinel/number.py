@@ -17,10 +17,12 @@ from .const import (
     OPT_REBALANCE_START_THRESHOLD,
     OPT_REBALANCE_STOP_THRESHOLD,
     OPT_REBALANCE_TRANSFER_RATE,
+    OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     OPT_MORNING_FLOOR_SOC,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
+    DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     DEFAULT_MORNING_FLOOR_SOC,
 )
 
@@ -64,6 +66,17 @@ NUMBER_DESCRIPTIONS = [
         native_step=0.5,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         option_key=OPT_REBALANCE_TRANSFER_RATE,
+    ),
+    SentinelNumberDescription(
+        key="solar_curtail_price_threshold",
+        name="Solar Curtail Price Threshold",
+        icon="mdi:currency-usd",
+        native_min_value=-0.50,
+        native_max_value=0.20,
+        native_step=0.01,
+        native_unit_of_measurement="$/kWh",
+        mode=NumberMode.BOX,
+        option_key=OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     ),
     SentinelNumberDescription(
         key="morning_floor_soc",
@@ -113,6 +126,7 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_REBALANCE_START_THRESHOLD: DEFAULT_REBALANCE_START_THRESHOLD,
         OPT_REBALANCE_STOP_THRESHOLD: DEFAULT_REBALANCE_STOP_THRESHOLD,
         OPT_REBALANCE_TRANSFER_RATE: DEFAULT_REBALANCE_TRANSFER_RATE,
+        OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
         OPT_MORNING_FLOOR_SOC: DEFAULT_MORNING_FLOOR_SOC,
     }
 
