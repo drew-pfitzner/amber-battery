@@ -81,6 +81,10 @@ LOAD_POWER_2 = "sensor.sigen_plant_2_load_power"
 PV_POWER_1 = "sensor.sigen_plant_pv_power"
 PV_POWER_2 = "sensor.sigen_plant_2_pv_power"
 
+# Battery power sensors (signed: positive = charging, negative = discharging)
+BATTERY_POWER_1 = "sensor.sigen_plant_battery_power"
+BATTERY_POWER_2 = "sensor.sigen_plant_2_battery_power"
+
 # Grid active power sensors (signed: positive = import, negative = export)
 # Used for true net metering calculation across both phases
 GRID_ACTIVE_POWER_1 = "sensor.sigen_plant_grid_active_power"

@@ -29,6 +29,7 @@ Both phases feed one meter — meter sees **net** of both phases. During rebalan
 | Grid import power | `sensor.sigen_plant_grid_import_power` | `sensor.sigen_plant_2_grid_import_power` |
 | Load power | `sensor.sigen_plant_load_power` | `sensor.sigen_plant_2_load_power` |
 | Grid active power | `sensor.sigen_plant_grid_active_power` | `sensor.sigen_plant_2_grid_active_power` |
+| Battery power | `sensor.sigen_plant_battery_power` | `sensor.sigen_plant_2_battery_power` |
 | Grid connection | `sensor.sigen_plant_grid_connection_status` | `sensor.sigen_plant_2_grid_connection_status` |
 
 ### Mode Options (select entities)
@@ -60,6 +61,7 @@ Custom HA integration: 7-mode priority stack evaluated every 30 seconds.
 - Rebalance uses PV First modes for both charge and discharge — solar is automatically prioritised, no suppression needed
 - Rebalance requires grid connection on both plants (disabled during grid outage)
 - Daily energy sensors use signed `grid_active_power` (net across both phases), NOT per-plant `grid_import_power`/`grid_export_power` which double-count during rebalancing
+- Battery sensors use `battery_power` from both plants (already in kW); sign convention TBC (assumed positive = discharging)
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
 
 ### ForecastEngine (Phase 2+)
@@ -93,6 +95,8 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Number entities: floor SOC (40%), charge rate (2 kW), typical overnight load (5 kWh)
 - [x] Predicted 6am SOC sensor, grid charging active binary sensor
 - [x] Fix daily energy sensors: RestoreEntity + TOTAL_INCREASING for energy dashboard
+- [x] Battery sensors: net battery power (kW), daily battery discharge/charge (kWh)
+- [ ] Verify battery power sign convention (positive = discharging assumed)
 - [ ] Deploy & test: enable morning floor switch, verify charging activates overnight
 - [ ] Verify stop condition: charging stops when mean SOC >= floor
 

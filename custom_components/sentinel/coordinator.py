@@ -54,6 +54,8 @@ from .const import (
     MORNING_FLOOR_END_MINUTE,
     PV_POWER_1,
     PV_POWER_2,
+    BATTERY_POWER_1,
+    BATTERY_POWER_2,
     GRID_ACTIVE_POWER_1,
     GRID_ACTIVE_POWER_2,
     GRID_CONNECTION_1,
@@ -206,6 +208,14 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             mean_soc = ((soc_1 or 0) + (soc_2 or 0)) / 2
             combined_pv = self._get_combined_pv_kw()
 
+            # Calculate net battery power (sum of both plants)
+            # Sigen battery_power: positive = discharging, negative = charging
+            bp_1 = self._get_state_float(BATTERY_POWER_1) or 0
+            bp_2 = self._get_state_float(BATTERY_POWER_2) or 0
+            net_battery_power = bp_1 + bp_2  # already in kW
+            net_battery_discharge = max(0, net_battery_power)
+            net_battery_charge = max(0, -net_battery_power)
+
             return {
                 "soc_1": soc_1,
                 "soc_2": soc_2,
@@ -215,6 +225,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "net_grid_import": net_grid_import,
                 "net_grid_export": net_grid_export,
                 "combined_pv_power": combined_pv,
+                "net_battery_power": net_battery_power,
+                "net_battery_discharge": net_battery_discharge,
+                "net_battery_charge": net_battery_charge,
                 "active_mode": self._current_mode,
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,

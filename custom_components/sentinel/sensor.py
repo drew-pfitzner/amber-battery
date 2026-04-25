@@ -31,10 +31,13 @@ async def async_setup_entry(
     sensors = [
         SentinelActiveModeSensor(coordinator),
         SentinelNetGridPowerSensor(coordinator),
+        SentinelNetBatteryPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
         SentinelCombinedPvPowerSensor(coordinator),
         SentinelDailyGridImportSensor(coordinator),
         SentinelDailyGridExportSensor(coordinator),
+        SentinelDailyBatteryDischargeSensor(coordinator),
+        SentinelDailyBatteryChargeSensor(coordinator),
     ]
 
     async_add_entities(sensors)
@@ -217,4 +220,50 @@ class SentinelDailyGridExportSensor(SentinelDailyEnergySensor):
             name="Daily Grid Export",
             icon="mdi:transmission-tower-export",
             power_key="net_grid_export",
+        )
+
+
+class SentinelNetBatteryPowerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing net battery power across both plants (signed)."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_net_battery_power"
+        self._attr_name = "Net Battery Power"
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:battery-charging"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> float | None:
+        """Return net battery power (positive = discharging, negative = charging)."""
+        return self.coordinator.data.get("net_battery_power")
+
+
+class SentinelDailyBatteryDischargeSensor(SentinelDailyEnergySensor):
+    """Daily kWh discharged from the batteries."""
+
+    def __init__(self, coordinator):
+        super().__init__(
+            coordinator,
+            key="daily_battery_discharge",
+            name="Daily Battery Discharge",
+            icon="mdi:battery-arrow-down",
+            power_key="net_battery_discharge",
+        )
+
+
+class SentinelDailyBatteryChargeSensor(SentinelDailyEnergySensor):
+    """Daily kWh charged into the batteries."""
+
+    def __init__(self, coordinator):
+        super().__init__(
+            coordinator,
+            key="daily_battery_charge",
+            name="Daily Battery Charge",
+            icon="mdi:battery-arrow-up",
+            power_key="net_battery_charge",
         )
