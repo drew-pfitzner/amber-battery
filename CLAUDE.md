@@ -63,7 +63,7 @@ Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
 - Rebalance requires grid connection on both plants (disabled during grid outage)
 - Solar curtail sets export limit to 0 kW when Amber feed-in price < threshold — inverters curtail solar to match load + battery charging only
 - Daily energy sensors use signed `grid_active_power` (net across both phases), NOT per-plant `grid_import_power`/`grid_export_power` which double-count during rebalancing
-- Battery sensors use `battery_power` from both plants (already in kW); sign convention TBC (assumed positive = discharging)
+- Battery sensors use `battery_power` from both plants (already in kW); Sigen sign convention is positive = charging, negative = discharging — coordinator negates so `net_battery_power` follows positive = discharging
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
 
 ### ForecastEngine (Phase 2+)
@@ -98,7 +98,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Predicted 6am SOC sensor, grid charging active binary sensor
 - [x] Fix daily energy sensors: RestoreEntity + TOTAL_INCREASING for energy dashboard
 - [x] Battery sensors: net battery power (kW), daily battery discharge/charge (kWh)
-- [ ] Verify battery power sign convention (positive = discharging assumed)
+- [x] Verify battery power sign convention — Sigen uses positive = charging, negated in coordinator
 - [ ] Deploy & test: enable morning floor switch, verify charging activates overnight
 - [ ] Verify stop condition: charging stops when mean SOC >= floor
 

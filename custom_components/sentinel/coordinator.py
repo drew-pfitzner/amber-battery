@@ -217,10 +217,11 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             combined_pv = self._get_combined_pv_kw()
 
             # Calculate net battery power (sum of both plants)
-            # Sigen battery_power: positive = discharging, negative = charging
+            # Sigen battery_power: positive = charging, negative = discharging
+            # Negate so net_battery_power follows positive = discharging convention
             bp_1 = self._get_state_float(BATTERY_POWER_1) or 0
             bp_2 = self._get_state_float(BATTERY_POWER_2) or 0
-            net_battery_power = bp_1 + bp_2  # already in kW
+            net_battery_power = -(bp_1 + bp_2)  # already in kW
             net_battery_discharge = max(0, net_battery_power)
             net_battery_charge = max(0, -net_battery_power)
 
