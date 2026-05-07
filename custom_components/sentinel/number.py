@@ -19,11 +19,17 @@ from .const import (
     OPT_REBALANCE_TRANSFER_RATE,
     OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     OPT_MORNING_FLOOR_SOC,
+    OPT_GRID_CHARGE_TARGET_SOC,
+    OPT_GRID_CHARGE_DEADLINE_HOUR,
+    OPT_GRID_CHARGE_RATE_KW,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
     DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     DEFAULT_MORNING_FLOOR_SOC,
+    DEFAULT_GRID_CHARGE_TARGET_SOC,
+    DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
+    DEFAULT_GRID_CHARGE_RATE_KW,
 )
 
 
@@ -88,6 +94,37 @@ NUMBER_DESCRIPTIONS = [
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_MORNING_FLOOR_SOC,
     ),
+    SentinelNumberDescription(
+        key="grid_charge_target_soc",
+        name="Grid Charge Target SOC",
+        icon="mdi:battery-arrow-up-outline",
+        native_min_value=50.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_TARGET_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_deadline_hour",
+        name="Grid Charge Deadline Hour",
+        icon="mdi:clock-end",
+        native_min_value=6.0,
+        native_max_value=22.0,
+        native_step=1.0,
+        native_unit_of_measurement="h",
+        mode=NumberMode.BOX,
+        option_key=OPT_GRID_CHARGE_DEADLINE_HOUR,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_rate_kw",
+        name="Grid Charge Rate",
+        icon="mdi:speedometer",
+        native_min_value=1.0,
+        native_max_value=14.0,
+        native_step=0.5,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        option_key=OPT_GRID_CHARGE_RATE_KW,
+    ),
 ]
 
 
@@ -128,6 +165,9 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_REBALANCE_TRANSFER_RATE: DEFAULT_REBALANCE_TRANSFER_RATE,
         OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
         OPT_MORNING_FLOOR_SOC: DEFAULT_MORNING_FLOOR_SOC,
+        OPT_GRID_CHARGE_TARGET_SOC: DEFAULT_GRID_CHARGE_TARGET_SOC,
+        OPT_GRID_CHARGE_DEADLINE_HOUR: DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
+        OPT_GRID_CHARGE_RATE_KW: DEFAULT_GRID_CHARGE_RATE_KW,
     }
 
     @property

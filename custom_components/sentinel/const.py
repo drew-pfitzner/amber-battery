@@ -60,6 +60,11 @@ OPT_SOLAR_CURTAIL_PRICE_THRESHOLD = "solar_curtail_price_threshold"
 # Options keys — morning floor
 OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
 
+# Options keys — grid charge
+OPT_GRID_CHARGE_TARGET_SOC = "grid_charge_target_soc"
+OPT_GRID_CHARGE_DEADLINE_HOUR = "grid_charge_deadline_hour"
+OPT_GRID_CHARGE_RATE_KW = "grid_charge_rate_kw"
+
 # Default values
 DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
@@ -67,6 +72,9 @@ DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
 DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below this feed-in price
+DEFAULT_GRID_CHARGE_TARGET_SOC = 85.0       # %
+DEFAULT_GRID_CHARGE_DEADLINE_HOUR = 17      # 5 PM local time
+DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
 DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %

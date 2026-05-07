@@ -1,6 +1,6 @@
 """Sentinel Energy Manager coordinator."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 from typing import Any
 
@@ -67,6 +67,14 @@ from .const import (
     MODE_MAXIMUM_SELF_CONSUMPTION,
     MODE_COMMAND_CHARGING_PV_FIRST,
     MODE_COMMAND_DISCHARGING_PV_FIRST,
+    CONF_CAPACITY_KWH,
+    CONF_AMBER_SITE_NAME,
+    OPT_GRID_CHARGE_TARGET_SOC,
+    OPT_GRID_CHARGE_DEADLINE_HOUR,
+    OPT_GRID_CHARGE_RATE_KW,
+    DEFAULT_GRID_CHARGE_TARGET_SOC,
+    DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
+    DEFAULT_GRID_CHARGE_RATE_KW,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,6 +115,11 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             entry_type=DeviceEntryType.SERVICE,
         )
 
+        # Forecast cache for GRID_CHARGE
+        self._forecast_cache: list[dict] | None = None
+        self._forecast_cache_time: datetime | None = None
+        self._grid_charge_active: bool = False
+
     def _load_options(self):
         """Load options from config entry (options override data)."""
         data = self.config_entry.data
@@ -129,6 +142,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_MORNING_FLOOR_SOC: options.get(
                 OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
+            ),
+            OPT_GRID_CHARGE_TARGET_SOC: options.get(
+                OPT_GRID_CHARGE_TARGET_SOC, DEFAULT_GRID_CHARGE_TARGET_SOC,
+            ),
+            OPT_GRID_CHARGE_DEADLINE_HOUR: options.get(
+                OPT_GRID_CHARGE_DEADLINE_HOUR, DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
+            ),
+            OPT_GRID_CHARGE_RATE_KW: options.get(
+                OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
             ),
         }
 
@@ -188,6 +210,13 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 self._current_mode = MODE_FAILSAFE
             else:
                 mean_soc = (soc_1 + soc_2) / 2
+
+                # Pre-compute GRID_CHARGE condition asynchronously before priority evaluation
+                if self.is_mode_enabled(MODE_GRID_CHARGE):
+                    self._grid_charge_active = await self._async_evaluate_grid_charge(mean_soc)
+                else:
+                    self._grid_charge_active = False
+
                 new_mode = self._evaluate_priority(
                     soc_1, soc_2, backup_soc_1, backup_soc_2, mean_soc,
                 )
@@ -197,6 +226,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     # Restore backup SOC when leaving morning floor
                     if self._current_mode == MODE_MORNING_FLOOR:
                         await self._restore_backup_soc()
+                    # Restore grid limits when leaving grid charge
+                    if self._current_mode == MODE_GRID_CHARGE:
+                        await self._restore_all_grid_limits()
                     self._current_mode = new_mode
 
                 await self._apply_mode(self._current_mode)
@@ -301,7 +333,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         return False
 
     def _check_grid_charge_conditions(self) -> bool:
-        return False
+        return self._grid_charge_active
 
     def _check_solar_curtail_conditions(self) -> bool:
         """Check if SOLAR_CURTAIL conditions are met (low feed-in price + solar producing)."""
@@ -370,6 +402,170 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         # Window spans midnight: active if past start OR before end
         return t >= start or t < end
 
+    async def _async_fetch_amber_forecasts(self) -> list[dict] | None:
+        """Fetch Amber forecasts, using a 15-minute cache."""
+        now = dt_util.now()
+
+        # Return cached data if fresh
+        if (
+            self._forecast_cache is not None
+            and self._forecast_cache_time is not None
+            and (now - self._forecast_cache_time).total_seconds() < 900
+        ):
+            return self._forecast_cache
+
+        # Discover Amber config entry
+        amber_entries = self.hass.config_entries.async_entries("amberelectric")
+        if not amber_entries:
+            _LOGGER.debug("No amberelectric config entries — GRID_CHARGE forecast unavailable")
+            return None
+
+        site_name = amber_entries[0].title
+        try:
+            response = await self.hass.services.async_call(
+                "amberelectric",
+                "get_forecasts",
+                {"config_entry": site_name, "channel_type": "general"},
+                blocking=True,
+                return_response=True,
+            )
+            forecasts = (response or {}).get("forecasts", [])
+            if not forecasts:
+                _LOGGER.warning("Amber get_forecasts returned empty list")
+                return None
+
+            self._forecast_cache = forecasts
+            self._forecast_cache_time = now
+            _LOGGER.debug("Cached %d Amber forecast intervals", len(forecasts))
+            return forecasts
+
+        except Exception as err:
+            _LOGGER.warning("Failed to fetch Amber forecasts: %s", err)
+            return None
+
+    def _select_cheapest_charge_window(
+        self, forecasts: list[dict], required_hours: float, deadline_hour: int,
+    ) -> set[str]:
+        """Select the cheapest set of forecast intervals to cover required_hours.
+
+        Returns a set of start_time strings for the selected intervals.
+        """
+        now = dt_util.now()
+        deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
+        if deadline <= now:
+            return set()
+
+        # Filter to intervals that start at or after now and end before deadline
+        eligible = []
+        for interval in forecasts:
+            try:
+                start_str = interval.get("start_time", "")
+                end_str = interval.get("end_time", "")
+                if not start_str or not end_str:
+                    continue
+                start_dt = dt_util.as_local(dt_util.parse_datetime(start_str))
+                end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
+                if start_dt is None or end_dt is None:
+                    continue
+                # Include if: start >= now AND end <= deadline
+                if start_dt >= now and end_dt <= deadline:
+                    eligible.append({
+                        "start_time": start_str,
+                        "per_kwh": float(interval.get("per_kwh", 999)),
+                        "duration_hours": (
+                            dt_util.parse_datetime(end_str) - dt_util.parse_datetime(start_str)
+                        ).total_seconds() / 3600,
+                    })
+            except (ValueError, TypeError, KeyError):
+                continue
+
+        if not eligible:
+            return set()
+
+        # Sort by price ascending, greedily pick cheapest until required_hours covered
+        eligible.sort(key=lambda x: x["per_kwh"])
+        selected: set[str] = set()
+        hours_covered = 0.0
+        for interval in eligible:
+            if hours_covered >= required_hours:
+                break
+            selected.add(interval["start_time"])
+            hours_covered += interval["duration_hours"]
+
+        return selected
+
+    async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
+        """Evaluate whether GRID_CHARGE should be active this cycle."""
+        target_soc = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
+        deadline_hour = int(self._opts[OPT_GRID_CHARGE_DEADLINE_HOUR])
+        charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
+        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
+
+        # Hysteresis: stop at target, don't start unless 1% below target
+        if self._current_mode == MODE_GRID_CHARGE:
+            if mean_soc >= target_soc:
+                _LOGGER.info("GRID_CHARGE stop: SOC %.1f%% >= target %.1f%%", mean_soc, target_soc)
+                return False
+        else:
+            if mean_soc >= (target_soc - 1.0):
+                return False
+
+        soc_deficit = max(0.0, target_soc - mean_soc)
+        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        if required_hours <= 0:
+            return False
+
+        now = dt_util.now()
+        deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
+        if deadline <= now:
+            _LOGGER.debug("GRID_CHARGE: deadline %02d:00 already passed", deadline_hour)
+            return False
+
+        hours_remaining = (deadline - now).total_seconds() / 3600
+
+        # Forced charge: not enough cheap time left to be selective
+        if hours_remaining < required_hours * 1.5:
+            _LOGGER.info(
+                "GRID_CHARGE forced: %.2fh remaining < %.2fh required × 1.5",
+                hours_remaining, required_hours,
+            )
+            return True
+
+        forecasts = await self._async_fetch_amber_forecasts()
+        if forecasts is None:
+            return False
+
+        selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline_hour)
+        if not selected:
+            _LOGGER.debug("GRID_CHARGE: no eligible intervals before %02d:00", deadline_hour)
+            return False
+
+        # Check if current time falls in a selected interval
+        for interval in forecasts:
+            try:
+                start_str = interval.get("start_time", "")
+                end_str = interval.get("end_time", "")
+                start_dt = dt_util.as_local(dt_util.parse_datetime(start_str))
+                end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
+                if start_dt is None or end_dt is None:
+                    continue
+                if start_dt <= now < end_dt:
+                    if start_str in selected:
+                        _LOGGER.info(
+                            "GRID_CHARGE active: $%.4f/kWh interval in cheapest window",
+                            interval.get("per_kwh", 0),
+                        )
+                        return True
+                    _LOGGER.debug(
+                        "GRID_CHARGE inactive: $%.4f/kWh interval not in cheapest window",
+                        interval.get("per_kwh", 0),
+                    )
+                    return False
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+        return False
+
     def _is_grid_connected(self) -> bool:
         """Check if both plants are connected to the grid."""
         state_1 = self.hass.states.get(GRID_CONNECTION_1)
@@ -402,6 +598,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._async_apply_solar_curtail()
         elif mode == MODE_MORNING_FLOOR:
             await self._async_apply_morning_floor()
+        elif mode == MODE_GRID_CHARGE:
+            await self._async_apply_grid_charge()
         elif mode == MODE_SELF_CONSUMPTION:
             await self._async_apply_self_consumption()
         else:
@@ -462,6 +660,18 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._restore_all_grid_limits()
         await self._call_service_set_limit(config[CONF_BACKUP_SOC_1], floor_soc)
         await self._call_service_set_limit(config[CONF_BACKUP_SOC_2], floor_soc)
+
+    async def _async_apply_grid_charge(self) -> None:
+        """GRID_CHARGE: both batteries Command Charging (PV First) at configured rate."""
+        config = self.config_entry.data
+        charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
+        per_plant_rate = min(charge_rate_kw / 2, DEFAULT_MAX_GRID_LIMIT)
+
+        await self._set_both_mode(MODE_COMMAND_CHARGING_PV_FIRST)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], per_plant_rate)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], per_plant_rate)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
     async def _restore_backup_soc(self) -> None:
         """Restore backup SOC to normal value when leaving morning floor."""

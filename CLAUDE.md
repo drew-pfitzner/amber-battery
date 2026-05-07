@@ -48,7 +48,7 @@ Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
 | 1 | **FAILSAFE** | Any Sigen entity unavailable OR HA switch off → Maximum Self Consumption |
 | 2 | **SPIKE_EXPORT** | Amber spike + SOC above floor + buffer → discharge at configurable rate |
 | 3 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
-| 4 | **GRID_CHARGE** | Amber price < threshold + solar won't cover + inside window → grid charge |
+| 4 | **GRID_CHARGE** | Mean SOC < target + time before deadline → charge at cheapest window or force if time-pressed |
 | 5 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
 | 6 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
 | 7 | **MORNING_FLOOR** | 22:00–06:00 + predicted 6am SOC < floor → gentle overnight charge |
@@ -108,8 +108,14 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Uses `sensor.hill_end_feed_in_price` + combined PV power > 0 as triggers
 - [ ] Deploy & test: enable switch, verify export blocked when feed-in < $0.01
 
-### Phase 3 — Amber Grid Charging
-- [ ] Amber price parsing, GRID_CHARGE mode, charge window selects
+### Phase 3 — Amber Grid Charging (COMPLETE)
+- [x] Amber forecast fetching via `amberelectric.get_forecasts` with 15-min cache
+- [x] GRID_CHARGE mode: Command Charging (PV First) during cheapest windows before deadline
+- [x] Smart window selection: greedily picks cheapest intervals covering required charge hours
+- [x] Forced charge safety: if remaining time < required_hours × 1.5, charge immediately
+- [x] Number entities: target SOC (85%), deadline hour (5pm), charge rate (7 kW total)
+- [x] Hysteresis: 1% buffer on entry, stops at target; auto-discovers Amber site from config entries
+- [ ] Deploy & test: enable switch, monitor for GRID_CHARGE active/inactive/forced logs
 
 ### Phase 4 — Price Spike Export
 - [ ] SPIKE_EXPORT mode with safety logic
