@@ -662,14 +662,43 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_BACKUP_SOC_2], floor_soc)
 
     async def _async_apply_grid_charge(self) -> None:
-        """GRID_CHARGE: both batteries Command Charging (PV First) at configured rate."""
+        """GRID_CHARGE: both batteries Command Charging (PV First) at configured rate.
+
+        Proportionally shifts power toward the lower-SOC battery to naturally
+        resolve imbalances during charging, avoiding REBALANCE contention.
+        """
         config = self.config_entry.data
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
-        per_plant_rate = min(charge_rate_kw / 2, DEFAULT_MAX_GRID_LIMIT)
+
+        soc_1 = self._get_state_float(config[CONF_SOC_1])
+        soc_2 = self._get_state_float(config[CONF_SOC_2])
+
+        if soc_1 is None or soc_2 is None:
+            # Fall back to equal split if SOC unavailable
+            per_plant = min(charge_rate_kw / 2, DEFAULT_MAX_GRID_LIMIT)
+            rate_1 = rate_2 = per_plant
+        else:
+            soc_diff = abs(soc_1 - soc_2)
+            # Linear shift: equal at 0% diff, up to 100% to lower battery at 100% diff
+            share_lower = 0.5 + soc_diff / 200.0
+            share_higher = 1.0 - share_lower
+
+            if soc_1 <= soc_2:
+                rate_1 = min(charge_rate_kw * share_lower, DEFAULT_MAX_GRID_LIMIT)
+                rate_2 = min(charge_rate_kw * share_higher, DEFAULT_MAX_GRID_LIMIT)
+            else:
+                rate_2 = min(charge_rate_kw * share_lower, DEFAULT_MAX_GRID_LIMIT)
+                rate_1 = min(charge_rate_kw * share_higher, DEFAULT_MAX_GRID_LIMIT)
+
+            if soc_diff >= 1.0:
+                _LOGGER.debug(
+                    "GRID_CHARGE proportional split: SOC %.1f%%/%.1f%% → plant1 %.2fkW plant2 %.2fkW",
+                    soc_1, soc_2, rate_1, rate_2,
+                )
 
         await self._set_both_mode(MODE_COMMAND_CHARGING_PV_FIRST)
-        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], per_plant_rate)
-        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], per_plant_rate)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], rate_1)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], rate_2)
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
