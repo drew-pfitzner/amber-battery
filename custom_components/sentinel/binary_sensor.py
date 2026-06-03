@@ -25,6 +25,7 @@ async def async_setup_entry(
         SentinelSolarCurtailActiveSensor(coordinator),
         SentinelMorningFloorActiveSensor(coordinator),
         SentinelGridChargingActiveSensor(coordinator),
+        SentinelOutagePrepActiveSensor(coordinator),
     ]
 
     async_add_entities(sensors)
@@ -115,3 +116,19 @@ class SentinelGridChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return True if grid charging is active."""
         return self.coordinator.data.get("grid_charging_active", False)
+
+
+class SentinelOutagePrepActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if outage prep charging is active."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_outage_prep_active"
+        self._attr_name = "Outage Prep Active"
+        self._attr_device_class = BinarySensorDeviceClass.RUNNING
+        self._attr_icon = "mdi:shield-alert"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.coordinator.data.get("outage_prep_active", False)

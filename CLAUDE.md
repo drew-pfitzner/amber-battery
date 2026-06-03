@@ -120,5 +120,12 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 ### Phase 4 — Price Spike Export
 - [ ] SPIKE_EXPORT mode with safety logic
 
-### Phase 5 — Planned Outage Prep
-- [ ] OutageStore, OUTAGE_PREP mode, services
+### Phase 5 — Planned Outage Prep (COMPLETE)
+- [x] `date.sentinel_outage_date` entity: single planned outage date (ISO, persisted in options)
+- [x] `number.sentinel_outage_target_soc` (default 90%); reuses `grid_charge_rate_kw` for charge power
+- [x] OUTAGE_PREP mode: charge window 22:00 day-before → 06:00 outage day
+- [x] Cheapest-interval selection within window via Amber forecasts; forced charge if `hours_remaining < required × 1.5`
+- [x] Falls back to immediate charge if Amber forecasts unavailable
+- [x] Hysteresis: stops at target, restarts 1% below; restores 7 kW grid limits on exit
+- [x] `binary_sensor.sentinel_outage_prep_active`; reuses `_async_apply_grid_charge` (PV First + proportional SOC split)
+- [ ] Deploy & test: set outage date, verify overnight charge picks cheapest intervals

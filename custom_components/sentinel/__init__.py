@@ -9,6 +9,7 @@ from .coordinator import SentinelCoordinator
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
+    Platform.DATE,
     Platform.NUMBER,
     Platform.SENSOR,
     Platform.SWITCH,

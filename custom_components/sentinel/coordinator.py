@@ -1,6 +1,6 @@
 """Sentinel Energy Manager coordinator."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import logging
 from typing import Any
 
@@ -72,9 +72,14 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_OUTAGE_DATE,
+    OPT_OUTAGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_OUTAGE_TARGET_SOC,
+    OUTAGE_PREP_START_HOUR,
+    OUTAGE_PREP_END_HOUR,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,6 +124,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._forecast_cache: list[dict] | None = None
         self._forecast_cache_time: datetime | None = None
         self._grid_charge_active: bool = False
+        self._outage_prep_active: bool = False
 
     def _load_options(self):
         """Load options from config entry (options override data)."""
@@ -151,6 +157,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
+            ),
+            OPT_OUTAGE_DATE: options.get(OPT_OUTAGE_DATE, ""),
+            OPT_OUTAGE_TARGET_SOC: options.get(
+                OPT_OUTAGE_TARGET_SOC, DEFAULT_OUTAGE_TARGET_SOC,
             ),
         }
 
@@ -217,6 +227,12 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 else:
                     self._grid_charge_active = False
 
+                # Pre-compute OUTAGE_PREP condition asynchronously before priority evaluation
+                if self.is_mode_enabled(MODE_OUTAGE_PREP):
+                    self._outage_prep_active = await self._async_evaluate_outage_prep(mean_soc)
+                else:
+                    self._outage_prep_active = False
+
                 new_mode = self._evaluate_priority(
                     soc_1, soc_2, backup_soc_1, backup_soc_2, mean_soc,
                 )
@@ -226,8 +242,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     # Restore backup SOC when leaving morning floor
                     if self._current_mode == MODE_MORNING_FLOOR:
                         await self._restore_backup_soc()
-                    # Restore grid limits when leaving grid charge
-                    if self._current_mode == MODE_GRID_CHARGE:
+                    # Restore grid limits when leaving grid charge / outage prep
+                    if self._current_mode in (MODE_GRID_CHARGE, MODE_OUTAGE_PREP):
                         await self._restore_all_grid_limits()
                     self._current_mode = new_mode
 
@@ -277,6 +293,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "grid_charging_active": self._current_mode in (
                     MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
                 ),
+                "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
             }
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
@@ -330,7 +347,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         return False
 
     def _check_outage_prep_conditions(self) -> bool:
-        return False
+        return self._outage_prep_active
 
     def _check_grid_charge_conditions(self) -> bool:
         return self._grid_charge_active
@@ -566,6 +583,145 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         return False
 
+    def _select_cheapest_intervals_in_window(
+        self,
+        forecasts: list[dict],
+        required_hours: float,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> set[str]:
+        """Pick cheapest forecast intervals fully inside [window_start, window_end]."""
+        eligible = []
+        for interval in forecasts:
+            try:
+                start_str = interval.get("start_time", "")
+                end_str = interval.get("end_time", "")
+                if not start_str or not end_str:
+                    continue
+                start_dt = dt_util.as_local(dt_util.parse_datetime(start_str))
+                end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
+                if start_dt is None or end_dt is None:
+                    continue
+                if start_dt >= window_start and end_dt <= window_end:
+                    eligible.append({
+                        "start_time": start_str,
+                        "per_kwh": float(interval.get("per_kwh", 999)),
+                        "duration_hours": (end_dt - start_dt).total_seconds() / 3600,
+                    })
+            except (ValueError, TypeError, KeyError):
+                continue
+
+        if not eligible:
+            return set()
+
+        eligible.sort(key=lambda x: x["per_kwh"])
+        selected: set[str] = set()
+        hours_covered = 0.0
+        for interval in eligible:
+            if hours_covered >= required_hours:
+                break
+            selected.add(interval["start_time"])
+            hours_covered += interval["duration_hours"]
+        return selected
+
+    async def _async_evaluate_outage_prep(self, mean_soc: float) -> bool:
+        """Evaluate whether OUTAGE_PREP should be active this cycle.
+
+        Charge window runs from OUTAGE_PREP_START_HOUR on the day BEFORE the
+        configured outage date through OUTAGE_PREP_END_HOUR on the outage day.
+        Selects cheapest Amber intervals to cover the required charge, or
+        forces charging if not enough time remains.
+        """
+        date_str = self._opts.get(OPT_OUTAGE_DATE, "")
+        if not date_str:
+            return False
+        try:
+            outage_date = date.fromisoformat(date_str)
+        except ValueError:
+            _LOGGER.warning("OUTAGE_PREP: invalid date %r in options", date_str)
+            return False
+
+        now = dt_util.now()
+        tz = now.tzinfo
+        window_start = datetime.combine(
+            outage_date - timedelta(days=1),
+            time(OUTAGE_PREP_START_HOUR, 0),
+            tzinfo=tz,
+        )
+        window_end = datetime.combine(
+            outage_date, time(OUTAGE_PREP_END_HOUR, 0), tzinfo=tz,
+        )
+
+        if now < window_start or now >= window_end:
+            return False
+
+        target_soc = self._opts[OPT_OUTAGE_TARGET_SOC]
+
+        # Hysteresis: stop at target, 1% buffer to start
+        if self._current_mode == MODE_OUTAGE_PREP:
+            if mean_soc >= target_soc:
+                _LOGGER.info(
+                    "OUTAGE_PREP stop: SOC %.1f%% >= target %.1f%%",
+                    mean_soc, target_soc,
+                )
+                return False
+        else:
+            if mean_soc >= (target_soc - 1.0):
+                return False
+
+        charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
+        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
+        soc_deficit = max(0.0, target_soc - mean_soc)
+        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        if required_hours <= 0:
+            return False
+
+        hours_remaining = (window_end - now).total_seconds() / 3600
+
+        if hours_remaining < required_hours * 1.5:
+            _LOGGER.info(
+                "OUTAGE_PREP forced: %.2fh remaining < %.2fh required × 1.5",
+                hours_remaining, required_hours,
+            )
+            return True
+
+        forecasts = await self._async_fetch_amber_forecasts()
+        if forecasts is None:
+            _LOGGER.info("OUTAGE_PREP: no forecasts, charging immediately to be safe")
+            return True
+
+        selected = self._select_cheapest_intervals_in_window(
+            forecasts, required_hours, window_start, window_end,
+        )
+        if not selected:
+            _LOGGER.debug("OUTAGE_PREP: no eligible intervals in window")
+            return False
+
+        for interval in forecasts:
+            try:
+                start_str = interval.get("start_time", "")
+                end_str = interval.get("end_time", "")
+                start_dt = dt_util.as_local(dt_util.parse_datetime(start_str))
+                end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
+                if start_dt is None or end_dt is None:
+                    continue
+                if start_dt <= now < end_dt:
+                    if start_str in selected:
+                        _LOGGER.info(
+                            "OUTAGE_PREP active: $%.4f/kWh in cheapest window",
+                            interval.get("per_kwh", 0),
+                        )
+                        return True
+                    _LOGGER.debug(
+                        "OUTAGE_PREP inactive: $%.4f/kWh not in cheapest window",
+                        interval.get("per_kwh", 0),
+                    )
+                    return False
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+        return False
+
     def _is_grid_connected(self) -> bool:
         """Check if both plants are connected to the grid."""
         state_1 = self.hass.states.get(GRID_CONNECTION_1)
@@ -599,6 +755,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         elif mode == MODE_MORNING_FLOOR:
             await self._async_apply_morning_floor()
         elif mode == MODE_GRID_CHARGE:
+            await self._async_apply_grid_charge()
+        elif mode == MODE_OUTAGE_PREP:
             await self._async_apply_grid_charge()
         elif mode == MODE_SELF_CONSUMPTION:
             await self._async_apply_self_consumption()

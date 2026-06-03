@@ -22,6 +22,7 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_OUTAGE_TARGET_SOC,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
@@ -30,6 +31,7 @@ from .const import (
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_OUTAGE_TARGET_SOC,
 )
 
 
@@ -116,6 +118,16 @@ NUMBER_DESCRIPTIONS = [
         option_key=OPT_GRID_CHARGE_DEADLINE_HOUR,
     ),
     SentinelNumberDescription(
+        key="outage_target_soc",
+        name="Outage Target SOC",
+        icon="mdi:shield-alert",
+        native_min_value=50.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_OUTAGE_TARGET_SOC,
+    ),
+    SentinelNumberDescription(
         key="grid_charge_rate_kw",
         name="Grid Charge Rate",
         icon="mdi:speedometer",
@@ -168,6 +180,7 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_GRID_CHARGE_TARGET_SOC: DEFAULT_GRID_CHARGE_TARGET_SOC,
         OPT_GRID_CHARGE_DEADLINE_HOUR: DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
         OPT_GRID_CHARGE_RATE_KW: DEFAULT_GRID_CHARGE_RATE_KW,
+        OPT_OUTAGE_TARGET_SOC: DEFAULT_OUTAGE_TARGET_SOC,
     }
 
     @property
