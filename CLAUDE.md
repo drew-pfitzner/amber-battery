@@ -5,7 +5,7 @@
 - 2 Sigen batteries (24.5 kWh each, 49 kWh total), each with smart gateway
 - 2 separate phases, split-phase 240V, both feed a **single power meter**
 - Retailer: **Amber Electric** / Distributor: **Essential Energy** (regional NSW)
-- Physical max: **7 kW** per battery (import and export)
+- Inverters: **12 kW** each; practical max charge rate **~10 kW** per battery
 
 ## Net Metering
 
