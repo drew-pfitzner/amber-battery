@@ -57,6 +57,8 @@ from .const import (
     MORNING_FLOOR_END_MINUTE,
     PV_POWER_1,
     PV_POWER_2,
+    LOAD_POWER_1,
+    LOAD_POWER_2,
     BATTERY_POWER_1,
     BATTERY_POWER_2,
     GRID_ACTIVE_POWER_1,
@@ -263,6 +265,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             soc_diff = abs((soc_1 or 0) - (soc_2 or 0))
             mean_soc = ((soc_1 or 0) + (soc_2 or 0)) / 2
             combined_pv = self._get_combined_pv_kw()
+            combined_load = self._get_combined_load_kw()
 
             # Calculate net battery power (sum of both plants)
             # Sigen battery_power: positive = charging, negative = discharging
@@ -282,6 +285,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "net_grid_import": net_grid_import,
                 "net_grid_export": net_grid_export,
                 "combined_pv_power": combined_pv,
+                "combined_load_power": combined_load,
                 "net_battery_power": net_battery_power,
                 "net_battery_discharge": net_battery_discharge,
                 "net_battery_charge": net_battery_charge,
@@ -742,6 +746,18 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return pv_1
         if pv_2 is not None:
             return pv_2
+        return None
+
+    def _get_combined_load_kw(self) -> float | None:
+        """Read combined household load from both Sigen plants (kW)."""
+        load_1 = self._get_state_float(LOAD_POWER_1)
+        load_2 = self._get_state_float(LOAD_POWER_2)
+        if load_1 is not None and load_2 is not None:
+            return load_1 + load_2
+        if load_1 is not None:
+            return load_1
+        if load_2 is not None:
+            return load_2
         return None
 
     async def _apply_mode(self, mode: str) -> None:

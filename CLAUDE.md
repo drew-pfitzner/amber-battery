@@ -79,7 +79,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - **Amber forecasts:** via action `amberelectric.get_forecasts` (config_entry="Hill End", channel_type="general"). Returns 5-min intervals with `per_kwh` (dollars), `spot_per_kwh`, `spike_status`, `descriptor`, `start_time` (UTC), `nem_date` (AEST). Called with `return_response=True`.
 - **Amber sensors:** `sensor.<site>_general_price`, `sensor.<site>_feed_in_price`, `binary_sensor.<site>_price_spike`
 - **Solcast:** `sensor.solcast_pv_solar_forecast_today`, `sensor.solcast_pv_solar_forecast_tomorrow`
-- **Sigen load:** `sensor.sigen_plant_load_power`, `sensor.sigen_plant_2_load_power` (hardcoded, not configurable)
+- **Sigen load:** `sensor.sigen_plant_consumed_power`, `sensor.sigen_plant_2_consumed_power` (hardcoded, not configurable)
 - **Sigen PV:** `sensor.sigen_plant_pv_power`, `sensor.sigen_plant_2_pv_power` (hardcoded, not configurable)
 
 ## Build Status

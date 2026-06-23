@@ -34,6 +34,7 @@ async def async_setup_entry(
         SentinelNetBatteryPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
         SentinelCombinedPvPowerSensor(coordinator),
+        SentinelCombinedLoadPowerSensor(coordinator),
         SentinelDailyGridImportSensor(coordinator),
         SentinelDailyGridExportSensor(coordinator),
         SentinelDailyBatteryDischargeSensor(coordinator),
@@ -118,6 +119,26 @@ class SentinelCombinedPvPowerSensor(CoordinatorEntity, SensorEntity):
     def native_value(self) -> float | None:
         """Return combined PV power."""
         return self.coordinator.data.get("combined_pv_power")
+
+
+class SentinelCombinedLoadPowerSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing combined household load across both plants."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_combined_load_power"
+        self._attr_name = "Combined Load Power"
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_icon = "mdi:home-lightning-bolt"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> float | None:
+        """Return combined load power."""
+        return self.coordinator.data.get("combined_load_power")
 
 
 class SentinelDailyEnergySensor(CoordinatorEntity, RestoreEntity, SensorEntity):

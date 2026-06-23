@@ -96,8 +96,8 @@ MORNING_FLOOR_END_HOUR = 5      # 5 AM
 MORNING_FLOOR_END_MINUTE = 50
 
 # Load power sensors (not configurable — known Sigen entity IDs)
-LOAD_POWER_1 = "sensor.sigen_plant_load_power"
-LOAD_POWER_2 = "sensor.sigen_plant_2_load_power"
+LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"
+LOAD_POWER_2 = "sensor.sigen_plant_2_consumed_power"
 
 # PV power sensors (not configurable — known Sigen entity IDs)
 PV_POWER_1 = "sensor.sigen_plant_pv_power"
