@@ -38,3 +38,6 @@ ehthumbs.db
 # Project-specific
 *.log
 .claude/plans/
+
+# Claude Code personal settings (machine-specific)
+.claude/settings.local.json
