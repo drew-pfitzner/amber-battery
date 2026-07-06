@@ -51,6 +51,7 @@ from .const import (
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
+    GRID_CHARGE_WINDOWS,
     MORNING_FLOOR_START_HOUR,
     MORNING_FLOOR_START_MINUTE,
     MORNING_FLOOR_END_HOUR,
@@ -74,12 +75,23 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_GRID_CHARGE_ADAPTIVE,
+    OPT_GRID_CHARGE_SOLAR_LOW_KWH,
+    OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    OPT_GRID_CHARGE_TARGET_HIGH_SOC,
+    OPT_GRID_CHARGE_TARGET_LOW_SOC,
     OPT_OUTAGE_DATE,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_GRID_CHARGE_ADAPTIVE,
+    DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+    DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+    DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
     DEFAULT_OUTAGE_TARGET_SOC,
+    CONF_SOLCAST_TOMORROW,
     OUTAGE_PREP_START_HOUR,
     OUTAGE_PREP_END_HOUR,
 )
@@ -126,6 +138,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._forecast_cache: list[dict] | None = None
         self._forecast_cache_time: datetime | None = None
         self._grid_charge_active: bool = False
+        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_TARGET_SOC
         self._outage_prep_active: bool = False
 
     def _load_options(self):
@@ -159,6 +172,21 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
+            ),
+            OPT_GRID_CHARGE_ADAPTIVE: options.get(
+                OPT_GRID_CHARGE_ADAPTIVE, DEFAULT_GRID_CHARGE_ADAPTIVE,
+            ),
+            OPT_GRID_CHARGE_SOLAR_LOW_KWH: options.get(
+                OPT_GRID_CHARGE_SOLAR_LOW_KWH, DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+            ),
+            OPT_GRID_CHARGE_SOLAR_HIGH_KWH: options.get(
+                OPT_GRID_CHARGE_SOLAR_HIGH_KWH, DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+            ),
+            OPT_GRID_CHARGE_TARGET_HIGH_SOC: options.get(
+                OPT_GRID_CHARGE_TARGET_HIGH_SOC, DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+            ),
+            OPT_GRID_CHARGE_TARGET_LOW_SOC: options.get(
+                OPT_GRID_CHARGE_TARGET_LOW_SOC, DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
             ),
             OPT_OUTAGE_DATE: options.get(OPT_OUTAGE_DATE, ""),
             OPT_OUTAGE_TARGET_SOC: options.get(
@@ -228,6 +256,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     self._grid_charge_active = await self._async_evaluate_grid_charge(mean_soc)
                 else:
                     self._grid_charge_active = False
+                    self._grid_charge_target = self._compute_grid_charge_target()
 
                 # Pre-compute OUTAGE_PREP condition asynchronously before priority evaluation
                 if self.is_mode_enabled(MODE_OUTAGE_PREP):
@@ -297,6 +326,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "grid_charging_active": self._current_mode in (
                     MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
                 ),
+                "grid_charge_target": self._grid_charge_target,
                 "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
             }
         except Exception as err:
@@ -464,15 +494,26 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.warning("Failed to fetch Amber forecasts: %s", err)
             return None
 
+    @staticmethod
+    def _in_grid_charge_window(when: datetime) -> bool:
+        """True if `when` falls inside an allowed off-peak GRID_CHARGE window."""
+        h = when.hour + when.minute / 60.0
+        for start_h, end_h in GRID_CHARGE_WINDOWS:
+            if start_h < end_h:
+                if start_h <= h < end_h:
+                    return True
+            elif h >= start_h or h < end_h:  # window wraps past midnight
+                return True
+        return False
+
     def _select_cheapest_charge_window(
-        self, forecasts: list[dict], required_hours: float, deadline_hour: int,
+        self, forecasts: list[dict], required_hours: float, deadline: datetime,
     ) -> set[str]:
         """Select the cheapest set of forecast intervals to cover required_hours.
 
         Returns a set of start_time strings for the selected intervals.
         """
         now = dt_util.now()
-        deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
         if deadline <= now:
             return set()
 
@@ -488,8 +529,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
                 if start_dt is None or end_dt is None:
                     continue
-                # Include if: start >= now AND end <= deadline
-                if start_dt >= now and end_dt <= deadline:
+                # Include if: start >= now AND end <= deadline AND inside an
+                # off-peak charge window (so peak intervals never get selected).
+                if start_dt >= now and end_dt <= deadline and self._in_grid_charge_window(start_dt):
                     eligible.append({
                         "start_time": start_str,
                         "per_kwh": float(interval.get("per_kwh", 999)),
@@ -515,9 +557,54 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         return selected
 
+    def _compute_grid_charge_target(self) -> float:
+        """Return the GRID_CHARGE target SOC.
+
+        With adaptive mode off, this is the fixed configured target. With it on,
+        the target is interpolated from tomorrow's Solcast forecast: poor solar →
+        high target (buy cheap overnight kWh), strong solar → low target (let the
+        sun refill the pack). Falls back to the fixed target if Solcast is
+        unconfigured or unavailable.
+        """
+        fixed = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
+        if not self._opts[OPT_GRID_CHARGE_ADAPTIVE]:
+            return fixed
+
+        entity_id = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
+        solar_kwh = self._get_state_float(entity_id) if entity_id else None
+        if solar_kwh is None:
+            _LOGGER.debug(
+                "GRID_CHARGE adaptive: Solcast tomorrow unavailable — using fixed target %.0f%%",
+                fixed,
+            )
+            return fixed
+
+        low_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_LOW_KWH]
+        high_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_HIGH_KWH]
+        high_soc = self._opts[OPT_GRID_CHARGE_TARGET_HIGH_SOC]
+        low_soc = self._opts[OPT_GRID_CHARGE_TARGET_LOW_SOC]
+
+        if solar_kwh <= low_kwh:
+            target = high_soc
+        elif solar_kwh >= high_kwh or high_kwh <= low_kwh:
+            target = low_soc
+        else:
+            # Linear interpolation: high_soc at low_kwh → low_soc at high_kwh
+            frac = (solar_kwh - low_kwh) / (high_kwh - low_kwh)
+            target = high_soc + frac * (low_soc - high_soc)
+
+        lo, hi = min(low_soc, high_soc), max(low_soc, high_soc)
+        target = round(max(lo, min(hi, target)), 1)
+        _LOGGER.debug(
+            "GRID_CHARGE adaptive: Solcast tomorrow %.1f kWh → target %.1f%%",
+            solar_kwh, target,
+        )
+        return target
+
     async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
         """Evaluate whether GRID_CHARGE should be active this cycle."""
-        target_soc = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
+        target_soc = self._compute_grid_charge_target()
+        self._grid_charge_target = target_soc
         deadline_hour = int(self._opts[OPT_GRID_CHARGE_DEADLINE_HOUR])
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
@@ -537,10 +624,18 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return False
 
         now = dt_util.now()
+
+        # Only grid-charge inside the off-peak windows — never during network
+        # peak periods, even when forced.
+        if not self._in_grid_charge_window(now):
+            _LOGGER.debug("GRID_CHARGE: %02d:%02d outside off-peak windows", now.hour, now.minute)
+            return False
+
         deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
         if deadline <= now:
-            _LOGGER.debug("GRID_CHARGE: deadline %02d:00 already passed", deadline_hour)
-            return False
+            # Today's deadline hour has passed — roll over to the same hour
+            # tomorrow so overnight charging works toward the next peak.
+            deadline += timedelta(days=1)
 
         hours_remaining = (deadline - now).total_seconds() / 3600
 
@@ -556,7 +651,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if forecasts is None:
             return False
 
-        selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline_hour)
+        selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline)
         if not selected:
             _LOGGER.debug("GRID_CHARGE: no eligible intervals before %02d:00", deadline_hour)
             return False
@@ -898,7 +993,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_mode(config[CONF_MODE_2], mode)
 
     async def _restore_all_grid_limits(self) -> None:
-        """Restore all grid limits to maximum (7 kW)."""
+        """Restore all grid limits to maximum (12 kW)."""
         config = self.config_entry.data
         limit = DEFAULT_MAX_GRID_LIMIT
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], limit)
