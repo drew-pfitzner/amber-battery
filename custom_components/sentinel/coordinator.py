@@ -74,12 +74,23 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_GRID_CHARGE_ADAPTIVE,
+    OPT_GRID_CHARGE_SOLAR_LOW_KWH,
+    OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    OPT_GRID_CHARGE_TARGET_HIGH_SOC,
+    OPT_GRID_CHARGE_TARGET_LOW_SOC,
     OPT_OUTAGE_DATE,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_GRID_CHARGE_ADAPTIVE,
+    DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+    DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+    DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
     DEFAULT_OUTAGE_TARGET_SOC,
+    CONF_SOLCAST_TOMORROW,
     OUTAGE_PREP_START_HOUR,
     OUTAGE_PREP_END_HOUR,
 )
@@ -126,6 +137,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._forecast_cache: list[dict] | None = None
         self._forecast_cache_time: datetime | None = None
         self._grid_charge_active: bool = False
+        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_TARGET_SOC
         self._outage_prep_active: bool = False
 
     def _load_options(self):
@@ -159,6 +171,21 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
+            ),
+            OPT_GRID_CHARGE_ADAPTIVE: options.get(
+                OPT_GRID_CHARGE_ADAPTIVE, DEFAULT_GRID_CHARGE_ADAPTIVE,
+            ),
+            OPT_GRID_CHARGE_SOLAR_LOW_KWH: options.get(
+                OPT_GRID_CHARGE_SOLAR_LOW_KWH, DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+            ),
+            OPT_GRID_CHARGE_SOLAR_HIGH_KWH: options.get(
+                OPT_GRID_CHARGE_SOLAR_HIGH_KWH, DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+            ),
+            OPT_GRID_CHARGE_TARGET_HIGH_SOC: options.get(
+                OPT_GRID_CHARGE_TARGET_HIGH_SOC, DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+            ),
+            OPT_GRID_CHARGE_TARGET_LOW_SOC: options.get(
+                OPT_GRID_CHARGE_TARGET_LOW_SOC, DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
             ),
             OPT_OUTAGE_DATE: options.get(OPT_OUTAGE_DATE, ""),
             OPT_OUTAGE_TARGET_SOC: options.get(
@@ -228,6 +255,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     self._grid_charge_active = await self._async_evaluate_grid_charge(mean_soc)
                 else:
                     self._grid_charge_active = False
+                    self._grid_charge_target = self._compute_grid_charge_target()
 
                 # Pre-compute OUTAGE_PREP condition asynchronously before priority evaluation
                 if self.is_mode_enabled(MODE_OUTAGE_PREP):
@@ -297,6 +325,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "grid_charging_active": self._current_mode in (
                     MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
                 ),
+                "grid_charge_target": self._grid_charge_target,
                 "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
             }
         except Exception as err:
@@ -515,9 +544,54 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         return selected
 
+    def _compute_grid_charge_target(self) -> float:
+        """Return the GRID_CHARGE target SOC.
+
+        With adaptive mode off, this is the fixed configured target. With it on,
+        the target is interpolated from tomorrow's Solcast forecast: poor solar →
+        high target (buy cheap overnight kWh), strong solar → low target (let the
+        sun refill the pack). Falls back to the fixed target if Solcast is
+        unconfigured or unavailable.
+        """
+        fixed = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
+        if not self._opts[OPT_GRID_CHARGE_ADAPTIVE]:
+            return fixed
+
+        entity_id = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
+        solar_kwh = self._get_state_float(entity_id) if entity_id else None
+        if solar_kwh is None:
+            _LOGGER.debug(
+                "GRID_CHARGE adaptive: Solcast tomorrow unavailable — using fixed target %.0f%%",
+                fixed,
+            )
+            return fixed
+
+        low_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_LOW_KWH]
+        high_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_HIGH_KWH]
+        high_soc = self._opts[OPT_GRID_CHARGE_TARGET_HIGH_SOC]
+        low_soc = self._opts[OPT_GRID_CHARGE_TARGET_LOW_SOC]
+
+        if solar_kwh <= low_kwh:
+            target = high_soc
+        elif solar_kwh >= high_kwh or high_kwh <= low_kwh:
+            target = low_soc
+        else:
+            # Linear interpolation: high_soc at low_kwh → low_soc at high_kwh
+            frac = (solar_kwh - low_kwh) / (high_kwh - low_kwh)
+            target = high_soc + frac * (low_soc - high_soc)
+
+        lo, hi = min(low_soc, high_soc), max(low_soc, high_soc)
+        target = round(max(lo, min(hi, target)), 1)
+        _LOGGER.debug(
+            "GRID_CHARGE adaptive: Solcast tomorrow %.1f kWh → target %.1f%%",
+            solar_kwh, target,
+        )
+        return target
+
     async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
         """Evaluate whether GRID_CHARGE should be active this cycle."""
-        target_soc = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
+        target_soc = self._compute_grid_charge_target()
+        self._grid_charge_target = target_soc
         deadline_hour = int(self._opts[OPT_GRID_CHARGE_DEADLINE_HOUR])
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
@@ -898,7 +972,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_mode(config[CONF_MODE_2], mode)
 
     async def _restore_all_grid_limits(self) -> None:
-        """Restore all grid limits to maximum (7 kW)."""
+        """Restore all grid limits to maximum (12 kW)."""
         config = self.config_entry.data
         limit = DEFAULT_MAX_GRID_LIMIT
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], limit)

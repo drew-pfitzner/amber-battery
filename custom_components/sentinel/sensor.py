@@ -33,6 +33,7 @@ async def async_setup_entry(
         SentinelNetGridPowerSensor(coordinator),
         SentinelNetBatteryPowerSensor(coordinator),
         SentinelMeanBatterySocSensor(coordinator),
+        SentinelGridChargeTargetSensor(coordinator),
         SentinelCombinedPvPowerSensor(coordinator),
         SentinelCombinedLoadPowerSensor(coordinator),
         SentinelDailyGridImportSensor(coordinator),
@@ -99,6 +100,24 @@ class SentinelMeanBatterySocSensor(CoordinatorEntity, SensorEntity):
         if soc_1 is not None and soc_2 is not None:
             return (soc_1 + soc_2) / 2
         return None
+
+
+class SentinelGridChargeTargetSensor(CoordinatorEntity, SensorEntity):
+    """Sensor showing the effective GRID_CHARGE target SOC (adaptive or fixed)."""
+
+    def __init__(self, coordinator):
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_grid_charge_target"
+        self._attr_name = "Grid Charge Target SOC"
+        self._attr_native_unit_of_measurement = PERCENTAGE
+        self._attr_icon = "mdi:battery-charging-medium"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the effective grid charge target."""
+        return self.coordinator.data.get("grid_charge_target")
 
 
 class SentinelCombinedPvPowerSensor(CoordinatorEntity, SensorEntity):

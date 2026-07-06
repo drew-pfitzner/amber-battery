@@ -57,7 +57,7 @@ Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
 ### Key Design Decisions
 
 - All mode switches default **OFF** for safety — user must enable each mode
-- Failsafe always restores batteries to Maximum Self Consumption + 7 kW limits
+- Failsafe always restores batteries to Maximum Self Consumption + 12 kW limits
 - Rebalance uses hysteresis: start threshold (default 7%) vs stop threshold (default 3%)
 - Rebalance uses PV First modes for both charge and discharge — solar is automatically prioritised, no suppression needed
 - Rebalance requires grid connection on both plants (disabled during grid outage)
@@ -117,6 +117,14 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Hysteresis: 1% buffer on entry, stops at target; auto-discovers Amber site from config entries
 - [ ] Deploy & test: enable switch, monitor for GRID_CHARGE active/inactive/forced logs
 
+#### Solar-adaptive target (COMPLETE)
+- [x] `switch.sentinel_grid_charge_adaptive_target` (default OFF): when on, GRID_CHARGE target SOC is derived from tomorrow's Solcast forecast instead of the fixed target
+- [x] Interpolation in `_compute_grid_charge_target()`: solar ≤ low threshold → high SOC target (winter, buy cheap overnight); solar ≥ high threshold → low SOC target (summer, let sun refill); linear between
+- [x] Number entities: solar low threshold (20 kWh), solar high threshold (45 kWh), target poor-solar (95%), target strong-solar (35%)
+- [x] Reads `sensor.solcast_pv_solar_forecast_tomorrow` (from config `CONF_SOLCAST_TOMORROW`); falls back to fixed `grid_charge_target_soc` if adaptive off, Solcast unconfigured, or unavailable
+- [x] `sensor.sentinel_grid_charge_target_soc` exposes the effective (computed) target for visibility/tuning
+- [ ] Deploy & test: enable adaptive switch, confirm target tracks Solcast tomorrow across a sunny vs cloudy day
+
 ### Phase 4 — Price Spike Export
 - [ ] SPIKE_EXPORT mode with safety logic
 
@@ -126,6 +134,6 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] OUTAGE_PREP mode: charge window 22:00 day-before → 06:00 outage day
 - [x] Cheapest-interval selection within window via Amber forecasts; forced charge if `hours_remaining < required × 1.5`
 - [x] Falls back to immediate charge if Amber forecasts unavailable
-- [x] Hysteresis: stops at target, restarts 1% below; restores 7 kW grid limits on exit
+- [x] Hysteresis: stops at target, restarts 1% below; restores 12 kW grid limits on exit
 - [x] `binary_sensor.sentinel_outage_prep_active`; reuses `_async_apply_grid_charge` (PV First + proportional SOC split)
 - [ ] Deploy & test: set outage date, verify overnight charge picks cheapest intervals

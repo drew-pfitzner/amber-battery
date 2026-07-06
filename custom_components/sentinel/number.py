@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.const import PERCENTAGE, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfPower, UnitOfEnergy
 
 from .const import (
     DOMAIN,
@@ -22,6 +22,10 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_GRID_CHARGE_SOLAR_LOW_KWH,
+    OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    OPT_GRID_CHARGE_TARGET_HIGH_SOC,
+    OPT_GRID_CHARGE_TARGET_LOW_SOC,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
@@ -31,6 +35,10 @@ from .const import (
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+    DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+    DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
     DEFAULT_OUTAGE_TARGET_SOC,
 )
 
@@ -91,7 +99,7 @@ NUMBER_DESCRIPTIONS = [
         name="Morning Floor SOC",
         icon="mdi:battery-arrow-up",
         native_min_value=10.0,
-        native_max_value=80.0,
+        native_max_value=100.0,
         native_step=5.0,
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_MORNING_FLOOR_SOC,
@@ -137,6 +145,48 @@ NUMBER_DESCRIPTIONS = [
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         option_key=OPT_GRID_CHARGE_RATE_KW,
     ),
+    SentinelNumberDescription(
+        key="grid_charge_solar_low_kwh",
+        name="Grid Charge Solar Low Threshold",
+        icon="mdi:weather-cloudy",
+        native_min_value=0.0,
+        native_max_value=60.0,
+        native_step=1.0,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        mode=NumberMode.BOX,
+        option_key=OPT_GRID_CHARGE_SOLAR_LOW_KWH,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_solar_high_kwh",
+        name="Grid Charge Solar High Threshold",
+        icon="mdi:weather-sunny",
+        native_min_value=0.0,
+        native_max_value=80.0,
+        native_step=1.0,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        mode=NumberMode.BOX,
+        option_key=OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_target_high_soc",
+        name="Grid Charge Target (Poor Solar)",
+        icon="mdi:battery-arrow-up",
+        native_min_value=50.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_TARGET_HIGH_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_target_low_soc",
+        name="Grid Charge Target (Strong Solar)",
+        icon="mdi:battery-arrow-down",
+        native_min_value=10.0,
+        native_max_value=80.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_TARGET_LOW_SOC,
+    ),
 ]
 
 
@@ -180,6 +230,10 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_GRID_CHARGE_TARGET_SOC: DEFAULT_GRID_CHARGE_TARGET_SOC,
         OPT_GRID_CHARGE_DEADLINE_HOUR: DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
         OPT_GRID_CHARGE_RATE_KW: DEFAULT_GRID_CHARGE_RATE_KW,
+        OPT_GRID_CHARGE_SOLAR_LOW_KWH: DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+        OPT_GRID_CHARGE_SOLAR_HIGH_KWH: DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+        OPT_GRID_CHARGE_TARGET_HIGH_SOC: DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+        OPT_GRID_CHARGE_TARGET_LOW_SOC: DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
         OPT_OUTAGE_TARGET_SOC: DEFAULT_OUTAGE_TARGET_SOC,
     }
 

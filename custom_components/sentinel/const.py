@@ -65,6 +65,16 @@ OPT_GRID_CHARGE_TARGET_SOC = "grid_charge_target_soc"
 OPT_GRID_CHARGE_DEADLINE_HOUR = "grid_charge_deadline_hour"
 OPT_GRID_CHARGE_RATE_KW = "grid_charge_rate_kw"
 
+# Options keys — grid charge solar-adaptive target
+# When enabled, the overnight GRID_CHARGE target SOC is interpolated from
+# tomorrow's Solcast forecast: poor solar → high target (buy cheap overnight),
+# strong solar → low target (let the sun refill the batteries for free).
+OPT_GRID_CHARGE_ADAPTIVE = "grid_charge_adaptive_target"
+OPT_GRID_CHARGE_SOLAR_LOW_KWH = "grid_charge_solar_low_kwh"      # at/below → high target
+OPT_GRID_CHARGE_SOLAR_HIGH_KWH = "grid_charge_solar_high_kwh"    # at/above → low target
+OPT_GRID_CHARGE_TARGET_HIGH_SOC = "grid_charge_target_high_soc"  # target at poor solar
+OPT_GRID_CHARGE_TARGET_LOW_SOC = "grid_charge_target_low_soc"    # target at strong solar
+
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
 OPT_OUTAGE_TARGET_SOC = "outage_target_soc"
@@ -79,13 +89,18 @@ DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below t
 DEFAULT_GRID_CHARGE_TARGET_SOC = 85.0       # %
 DEFAULT_GRID_CHARGE_DEADLINE_HOUR = 17      # 5 PM local time
 DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
+DEFAULT_GRID_CHARGE_ADAPTIVE = False        # off by default — opt-in seasonal target
+DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH = 20.0    # kWh — at/below this tomorrow's solar → high target
+DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH = 45.0   # kWh — at/above this tomorrow's solar → low target
+DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC = 95.0  # % — overnight target when solar is poor
+DEFAULT_GRID_CHARGE_TARGET_LOW_SOC = 35.0   # % — overnight target when solar is strong
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
 
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)
 OUTAGE_PREP_START_HOUR = 22                 # 10 PM on day before
 OUTAGE_PREP_END_HOUR = 6                    # 6 AM on outage day
 DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
-DEFAULT_MAX_GRID_LIMIT = 7.0             # kW
+DEFAULT_MAX_GRID_LIMIT = 12.0            # kW — full inverter capacity; Sigen throttles to its own internal limit
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 
