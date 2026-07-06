@@ -104,6 +104,12 @@ DEFAULT_MAX_GRID_LIMIT = 12.0            # kW — full inverter capacity; Sigen 
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 
+# GRID_CHARGE off-peak windows (local time). Grid charging is only allowed
+# inside these windows to avoid network/Amber peak periods (06:00–09:00 and
+# 16:00–22:00). Each entry is (start_hour, end_hour); a window whose start > end
+# wraps past midnight. Applies to all GRID_CHARGE paths, including forced charge.
+GRID_CHARGE_WINDOWS = ((22, 6), (9, 16))    # 10 PM–6 AM and 9 AM–4 PM
+
 # Morning floor time window
 MORNING_FLOOR_START_HOUR = 22   # 10 PM
 MORNING_FLOOR_START_MINUTE = 10

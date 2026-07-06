@@ -51,6 +51,7 @@ from .const import (
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
+    GRID_CHARGE_WINDOWS,
     MORNING_FLOOR_START_HOUR,
     MORNING_FLOOR_START_MINUTE,
     MORNING_FLOOR_END_HOUR,
@@ -493,15 +494,26 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.warning("Failed to fetch Amber forecasts: %s", err)
             return None
 
+    @staticmethod
+    def _in_grid_charge_window(when: datetime) -> bool:
+        """True if `when` falls inside an allowed off-peak GRID_CHARGE window."""
+        h = when.hour + when.minute / 60.0
+        for start_h, end_h in GRID_CHARGE_WINDOWS:
+            if start_h < end_h:
+                if start_h <= h < end_h:
+                    return True
+            elif h >= start_h or h < end_h:  # window wraps past midnight
+                return True
+        return False
+
     def _select_cheapest_charge_window(
-        self, forecasts: list[dict], required_hours: float, deadline_hour: int,
+        self, forecasts: list[dict], required_hours: float, deadline: datetime,
     ) -> set[str]:
         """Select the cheapest set of forecast intervals to cover required_hours.
 
         Returns a set of start_time strings for the selected intervals.
         """
         now = dt_util.now()
-        deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
         if deadline <= now:
             return set()
 
@@ -517,8 +529,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
                 if start_dt is None or end_dt is None:
                     continue
-                # Include if: start >= now AND end <= deadline
-                if start_dt >= now and end_dt <= deadline:
+                # Include if: start >= now AND end <= deadline AND inside an
+                # off-peak charge window (so peak intervals never get selected).
+                if start_dt >= now and end_dt <= deadline and self._in_grid_charge_window(start_dt):
                     eligible.append({
                         "start_time": start_str,
                         "per_kwh": float(interval.get("per_kwh", 999)),
@@ -611,10 +624,18 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return False
 
         now = dt_util.now()
+
+        # Only grid-charge inside the off-peak windows — never during network
+        # peak periods, even when forced.
+        if not self._in_grid_charge_window(now):
+            _LOGGER.debug("GRID_CHARGE: %02d:%02d outside off-peak windows", now.hour, now.minute)
+            return False
+
         deadline = now.replace(hour=deadline_hour, minute=0, second=0, microsecond=0)
         if deadline <= now:
-            _LOGGER.debug("GRID_CHARGE: deadline %02d:00 already passed", deadline_hour)
-            return False
+            # Today's deadline hour has passed — roll over to the same hour
+            # tomorrow so overnight charging works toward the next peak.
+            deadline += timedelta(days=1)
 
         hours_remaining = (deadline - now).total_seconds() / 3600
 
@@ -630,7 +651,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if forecasts is None:
             return False
 
-        selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline_hour)
+        selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline)
         if not selected:
             _LOGGER.debug("GRID_CHARGE: no eligible intervals before %02d:00", deadline_hour)
             return False
