@@ -72,8 +72,18 @@ OPT_GRID_CHARGE_RATE_KW = "grid_charge_rate_kw"
 OPT_GRID_CHARGE_ADAPTIVE = "grid_charge_adaptive_target"
 OPT_GRID_CHARGE_SOLAR_LOW_KWH = "grid_charge_solar_low_kwh"      # at/below → high target
 OPT_GRID_CHARGE_SOLAR_HIGH_KWH = "grid_charge_solar_high_kwh"    # at/above → low target
-OPT_GRID_CHARGE_TARGET_HIGH_SOC = "grid_charge_target_high_soc"  # target at poor solar
-OPT_GRID_CHARGE_TARGET_LOW_SOC = "grid_charge_target_low_soc"    # target at strong solar
+OPT_GRID_CHARGE_TARGET_HIGH_SOC = "grid_charge_target_high_soc"  # evening target at poor solar
+OPT_GRID_CHARGE_TARGET_LOW_SOC = "grid_charge_target_low_soc"    # evening target at strong solar
+
+# Options keys — grid charge overnight cap (phase 1)
+# GRID_CHARGE runs in two phases: an overnight phase (charge to a modest cap by
+# the morning peak, leaving headroom for solar) and a daytime top-up phase
+# (let solar charge first, top up with cheap grid to the evening target). The
+# overnight cap uses the SAME solar low/high kWh thresholds as the evening
+# target for its adaptive interpolation.
+OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = "grid_charge_overnight_target_soc"            # fixed cap (adaptive off)
+OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = "grid_charge_overnight_target_high_soc"  # overnight cap at poor solar
+OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = "grid_charge_overnight_target_low_soc"    # overnight cap at strong solar
 
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
@@ -92,8 +102,13 @@ DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
 DEFAULT_GRID_CHARGE_ADAPTIVE = False        # off by default — opt-in seasonal target
 DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH = 20.0    # kWh — at/below this tomorrow's solar → high target
 DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH = 45.0   # kWh — at/above this tomorrow's solar → low target
-DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC = 95.0  # % — overnight target when solar is poor
-DEFAULT_GRID_CHARGE_TARGET_LOW_SOC = 35.0   # % — overnight target when solar is strong
+DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC = 95.0  # % — evening target when solar is poor
+DEFAULT_GRID_CHARGE_TARGET_LOW_SOC = 35.0   # % — evening target when solar is strong
+# Overnight cap (phase 1) — how full to charge by the morning peak. Kept below
+# the evening target so daytime solar has headroom to fill the rest for free.
+DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = 60.0       # % — fixed cap when adaptive off
+DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = 85.0  # % — overnight cap when solar is poor
+DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = 45.0   # % — overnight cap when solar is strong
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
 
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)
@@ -109,6 +124,12 @@ DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 # 16:00–22:00). Each entry is (start_hour, end_hour); a window whose start > end
 # wraps past midnight. Applies to all GRID_CHARGE paths, including forced charge.
 GRID_CHARGE_WINDOWS = ((22, 6), (9, 16))    # 10 PM–6 AM and 9 AM–4 PM
+
+# GRID_CHARGE phase boundaries (local hour). The overnight phase charges toward
+# the overnight cap by the morning peak; the daytime phase tops up toward the
+# evening target by the evening deadline (grid_charge_deadline_hour).
+GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — overnight phase completes by here
+GRID_CHARGE_DAYTIME_START_HOUR = 9          # 9 AM — daytime top-up window opens
 
 # Morning floor time window
 MORNING_FLOOR_START_HOUR = 22   # 10 PM

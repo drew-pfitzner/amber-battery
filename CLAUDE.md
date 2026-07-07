@@ -48,7 +48,7 @@ Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
 | 1 | **FAILSAFE** | Any Sigen entity unavailable OR HA switch off → Maximum Self Consumption |
 | 2 | **SPIKE_EXPORT** | Amber spike + SOC above floor + buffer → discharge at configurable rate |
 | 3 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
-| 4 | **GRID_CHARGE** | Mean SOC < target + time before deadline → charge at cheapest window or force if time-pressed |
+| 4 | **GRID_CHARGE** | Two phases — overnight (charge to cap by 06:00) + daytime top-up (to evening target by deadline) → charge at cheapest window or force if time-pressed |
 | 5 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
 | 6 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
 | 7 | **MORNING_FLOOR** | 22:00–06:00 + predicted 6am SOC < floor → gentle overnight charge |
@@ -124,6 +124,15 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Reads `sensor.solcast_pv_solar_forecast_tomorrow` (from config `CONF_SOLCAST_TOMORROW`); falls back to fixed `grid_charge_target_soc` if adaptive off, Solcast unconfigured, or unavailable
 - [x] `sensor.sentinel_grid_charge_target_soc` exposes the effective (computed) target for visibility/tuning
 - [ ] Deploy & test: enable adaptive switch, confirm target tracks Solcast tomorrow across a sunny vs cloudy day
+
+#### Two-phase charging (COMPLETE)
+- [x] GRID_CHARGE splits into an **overnight phase** (22:00–06:00, target = overnight cap, deadline 06:00) and a **daytime top-up phase** (09:00–16:00, target = evening target, deadline = `grid_charge_deadline_hour`), chosen by which off-peak window `now` is in (`_async_evaluate_grid_charge`)
+- [x] Overnight's 06:00 deadline means `_select_cheapest_charge_window` only sees overnight intervals — the midday window can no longer steal the overnight charge (root cause of "sat in MORNING_FLOOR overnight, no cheap-window charging")
+- [x] Overnight cap kept below the evening target so daytime solar has headroom to fill the rest for free; daytime phase yields to SELF_CONSUMPTION outside selected cheap intervals so solar charges first, then grid tops up when cheap
+- [x] Overnight cap is adaptive too via shared `_interp_target_from_solar()` + shared solar low/high kWh thresholds: poor solar → high cap (85%, buy cheap overnight), strong solar → low cap (45%, lean on sun)
+- [x] Number entities: overnight cap fixed (60%, adaptive off), overnight cap poor-solar (85%), overnight cap strong-solar (45%)
+- [x] `sensor.sentinel_grid_charge_target_soc` is now phase-aware — shows the active phase's target (overnight cap overnight, evening target during the day)
+- [ ] Deploy & test: confirm overnight charges to the cap at cheapest night intervals, then daytime tops up to the evening target after solar
 
 ### Phase 4 — Price Spike Export
 - [ ] SPIKE_EXPORT mode with safety logic

@@ -26,6 +26,9 @@ from .const import (
     OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
     OPT_GRID_CHARGE_TARGET_HIGH_SOC,
     OPT_GRID_CHARGE_TARGET_LOW_SOC,
+    OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
+    OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
+    OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
@@ -39,6 +42,9 @@ from .const import (
     DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
     DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
     DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
+    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
+    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
+    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
     DEFAULT_OUTAGE_TARGET_SOC,
 )
 
@@ -187,6 +193,36 @@ NUMBER_DESCRIPTIONS = [
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_GRID_CHARGE_TARGET_LOW_SOC,
     ),
+    SentinelNumberDescription(
+        key="grid_charge_overnight_target_soc",
+        name="Grid Charge Overnight Cap",
+        icon="mdi:weather-night",
+        native_min_value=20.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_overnight_target_high_soc",
+        name="Grid Charge Overnight Cap (Poor Solar)",
+        icon="mdi:weather-night",
+        native_min_value=20.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_overnight_target_low_soc",
+        name="Grid Charge Overnight Cap (Strong Solar)",
+        icon="mdi:weather-night-partly-cloudy",
+        native_min_value=10.0,
+        native_max_value=80.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+    ),
 ]
 
 
@@ -234,6 +270,9 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_GRID_CHARGE_SOLAR_HIGH_KWH: DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
         OPT_GRID_CHARGE_TARGET_HIGH_SOC: DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
         OPT_GRID_CHARGE_TARGET_LOW_SOC: DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
+        OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
+        OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
+        OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
         OPT_OUTAGE_TARGET_SOC: DEFAULT_OUTAGE_TARGET_SOC,
     }
 
