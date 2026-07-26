@@ -3,6 +3,11 @@
 DOMAIN = "sentinel"
 SCAN_INTERVAL_SECONDS = 30
 
+# Consecutive polls a critical entity must read unavailable before FAILSAFE trips.
+# Rides out a single missed poll (transient sensor dropout) without dropping the
+# whole stack to Maximum Self Consumption. HA-switch-off still trips immediately.
+FAILSAFE_DEBOUNCE_POLLS = 2
+
 # Mode constants
 MODE_FAILSAFE = "FAILSAFE"
 MODE_SPIKE_EXPORT = "SPIKE_EXPORT"
@@ -64,6 +69,9 @@ OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
 OPT_GRID_CHARGE_TARGET_SOC = "grid_charge_target_soc"
 OPT_GRID_CHARGE_DEADLINE_HOUR = "grid_charge_deadline_hour"
 OPT_GRID_CHARGE_RATE_KW = "grid_charge_rate_kw"
+# SOC band below target before a stopped GRID_CHARGE restarts (hysteresis). A
+# wider band stops the mode re-triggering every cycle as load nibbles the pack.
+OPT_GRID_CHARGE_HYSTERESIS_SOC = "grid_charge_hysteresis_soc"
 
 # Options keys — grid charge solar-adaptive target
 # When enabled, the overnight GRID_CHARGE target SOC is interpolated from
@@ -82,8 +90,15 @@ OPT_GRID_CHARGE_TARGET_LOW_SOC = "grid_charge_target_low_soc"    # evening targe
 # overnight cap uses the SAME solar low/high kWh thresholds as the evening
 # target for its adaptive interpolation.
 OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = "grid_charge_overnight_target_soc"            # fixed cap (adaptive off)
-OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = "grid_charge_overnight_target_high_soc"  # overnight cap at poor solar
-OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = "grid_charge_overnight_target_low_soc"    # overnight cap at strong solar
+OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = "grid_charge_overnight_target_high_soc"  # overnight cap ceiling (no solar surplus)
+OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = "grid_charge_overnight_target_low_soc"    # overnight cap floor (large solar surplus)
+# Expected daytime household/site consumption during solar hours (kWh). Used to
+# turn tomorrow's forecast solar into an *exportable surplus* (forecast PV minus
+# this load). The adaptive overnight cap leaves headroom only for that surplus,
+# so a high-load site still charges to the ceiling (solar won't export) while a
+# sunny, low-load day holds the cap down so daytime solar fills the pack for free
+# instead of spilling to the grid at a poor feed-in price.
+OPT_EXPECTED_DAYTIME_LOAD_KWH = "expected_daytime_load_kwh"
 
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
@@ -91,7 +106,7 @@ OPT_OUTAGE_TARGET_SOC = "outage_target_soc"
 
 # Default values
 DEFAULT_BATTERY_CAPACITY_KWH = 24.5
-DEFAULT_REBALANCE_START_THRESHOLD = 7.0  # %
+DEFAULT_REBALANCE_START_THRESHOLD = 10.0  # % — wider start band curbs all-day rebalance churn
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
 DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
@@ -99,6 +114,7 @@ DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below t
 DEFAULT_GRID_CHARGE_TARGET_SOC = 85.0       # %
 DEFAULT_GRID_CHARGE_DEADLINE_HOUR = 17      # 5 PM local time
 DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
+DEFAULT_GRID_CHARGE_HYSTERESIS_SOC = 3.0    # % — restart band below target once stopped
 DEFAULT_GRID_CHARGE_ADAPTIVE = False        # off by default — opt-in seasonal target
 DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH = 20.0    # kWh — at/below this tomorrow's solar → high target
 DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH = 45.0   # kWh — at/above this tomorrow's solar → low target
@@ -107,8 +123,9 @@ DEFAULT_GRID_CHARGE_TARGET_LOW_SOC = 35.0   # % — evening target when solar is
 # Overnight cap (phase 1) — how full to charge by the morning peak. Kept below
 # the evening target so daytime solar has headroom to fill the rest for free.
 DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = 60.0       # % — fixed cap when adaptive off
-DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = 85.0  # % — overnight cap when solar is poor
-DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = 45.0   # % — overnight cap when solar is strong
+DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = 85.0  # % — overnight cap ceiling (no exportable solar surplus)
+DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = 45.0   # % — overnight cap floor (large exportable solar surplus)
+DEFAULT_EXPECTED_DAYTIME_LOAD_KWH = 45.0    # kWh — site consumption during solar hours (surplus = forecast PV − this)
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
 
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)

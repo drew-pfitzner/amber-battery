@@ -77,6 +77,7 @@ from .const import (
     OPT_GRID_CHARGE_TARGET_SOC,
     OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
+    OPT_GRID_CHARGE_HYSTERESIS_SOC,
     OPT_GRID_CHARGE_ADAPTIVE,
     OPT_GRID_CHARGE_SOLAR_LOW_KWH,
     OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
@@ -85,11 +86,13 @@ from .const import (
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+    OPT_EXPECTED_DAYTIME_LOAD_KWH,
     OPT_OUTAGE_DATE,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
+    DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
     DEFAULT_GRID_CHARGE_ADAPTIVE,
     DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
     DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
@@ -98,8 +101,10 @@ from .const import (
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+    DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
     DEFAULT_OUTAGE_TARGET_SOC,
     CONF_SOLCAST_TOMORROW,
+    FAILSAFE_DEBOUNCE_POLLS,
     OUTAGE_PREP_START_HOUR,
     OUTAGE_PREP_END_HOUR,
 )
@@ -148,6 +153,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._grid_charge_active: bool = False
         self._grid_charge_target: float = DEFAULT_GRID_CHARGE_TARGET_SOC
         self._outage_prep_active: bool = False
+        # Consecutive polls with a critical entity unavailable (FAILSAFE debounce)
+        self._unavailable_count: int = 0
 
     def _load_options(self):
         """Load options from config entry (options override data)."""
@@ -181,6 +188,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
             ),
+            OPT_GRID_CHARGE_HYSTERESIS_SOC: options.get(
+                OPT_GRID_CHARGE_HYSTERESIS_SOC, DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
+            ),
             OPT_GRID_CHARGE_ADAPTIVE: options.get(
                 OPT_GRID_CHARGE_ADAPTIVE, DEFAULT_GRID_CHARGE_ADAPTIVE,
             ),
@@ -207,6 +217,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC: options.get(
                 OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
                 DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+            ),
+            OPT_EXPECTED_DAYTIME_LOAD_KWH: options.get(
+                OPT_EXPECTED_DAYTIME_LOAD_KWH, DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
             ),
             OPT_OUTAGE_DATE: options.get(OPT_OUTAGE_DATE, ""),
             OPT_OUTAGE_TARGET_SOC: options.get(
@@ -260,7 +273,20 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             )
             ha_switches_off = (ha_switch_1 is False) or (ha_switch_2 is False)
 
-            if entities_unavailable or ha_switches_off:
+            # Debounce transient sensor dropouts: a critical entity must read
+            # unavailable for FAILSAFE_DEBOUNCE_POLLS consecutive cycles before
+            # tripping FAILSAFE. An HA control switch turned off is a deliberate
+            # user action and still trips immediately.
+            if entities_unavailable:
+                self._unavailable_count += 1
+            else:
+                self._unavailable_count = 0
+            unavailable_confirmed = (
+                entities_unavailable
+                and self._unavailable_count >= FAILSAFE_DEBOUNCE_POLLS
+            )
+
+            if unavailable_confirmed or ha_switches_off:
                 if self._current_mode != MODE_FAILSAFE:
                     _LOGGER.warning(
                         "Entering FAILSAFE: entities_unavailable=%s, ha_switches_off=%s",
@@ -268,6 +294,13 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     )
                 await self._async_apply_failsafe()
                 self._current_mode = MODE_FAILSAFE
+            elif entities_unavailable:
+                # Transient dropout within the debounce grace period — hold the
+                # current mode this cycle rather than acting on partial data.
+                _LOGGER.debug(
+                    "Critical entity unavailable (%d/%d) — holding mode %s",
+                    self._unavailable_count, FAILSAFE_DEBOUNCE_POLLS, self._current_mode,
+                )
             else:
                 mean_soc = (soc_1 + soc_2) / 2
 
@@ -430,6 +463,14 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         backup_soc_2: float,
     ) -> bool:
         """Check if REBALANCE conditions are met."""
+        # Don't rebalance while actively grid-charging (or prepping for an
+        # outage). Charging drives the two packs apart, so letting REBALANCE fire
+        # in the same window makes them fight — one charges from grid while the
+        # other discharges to it. Grid charge already outranks REBALANCE; this
+        # also blocks it in any cycle where charging is engaged.
+        if self._grid_charge_active or self._outage_prep_active:
+            return False
+
         # Require grid connection on both plants
         if not self._is_grid_connected():
             return False
@@ -529,7 +570,14 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
     def _select_cheapest_charge_window(
         self, forecasts: list[dict], required_hours: float, deadline: datetime,
     ) -> set[str]:
-        """Select the cheapest set of forecast intervals to cover required_hours.
+        """Select the cheapest *contiguous* block of intervals covering required_hours.
+
+        Picking the N globally-cheapest intervals scatters the charge across
+        non-adjacent 5-min slots, so GRID_CHARGE toggles on/off every few minutes
+        and REBALANCE steals the gaps — the pack thrashes instead of charging.
+        Instead, slide over the time-ordered eligible intervals and pick the
+        single contiguous run (cheapest by total cost) that covers the required
+        hours, so the charge runs as one uninterrupted block.
 
         Returns a set of start_time strings for the selected intervals.
         """
@@ -554,10 +602,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 if start_dt >= now and end_dt <= deadline and self._in_grid_charge_window(start_dt):
                     eligible.append({
                         "start_time": start_str,
+                        "start_dt": start_dt,
                         "per_kwh": float(interval.get("per_kwh", 999)),
-                        "duration_hours": (
-                            dt_util.parse_datetime(end_str) - dt_util.parse_datetime(start_str)
-                        ).total_seconds() / 3600,
+                        "duration_hours": (end_dt - start_dt).total_seconds() / 3600,
                     })
             except (ValueError, TypeError, KeyError):
                 continue
@@ -565,17 +612,35 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if not eligible:
             return set()
 
-        # Sort by price ascending, greedily pick cheapest until required_hours covered
-        eligible.sort(key=lambda x: x["per_kwh"])
-        selected: set[str] = set()
-        hours_covered = 0.0
-        for interval in eligible:
-            if hours_covered >= required_hours:
-                break
-            selected.add(interval["start_time"])
-            hours_covered += interval["duration_hours"]
+        # Order by time so a run of consecutive list entries is contiguous in
+        # time (intervals within a single off-peak window have no gaps).
+        eligible.sort(key=lambda x: x["start_dt"])
+        total_hours = sum(e["duration_hours"] for e in eligible)
+        if total_hours <= required_hours:
+            # Not enough cheap time to be selective — take everything available.
+            return {e["start_time"] for e in eligible}
 
-        return selected
+        # Sliding window: cheapest contiguous run covering >= required_hours.
+        n = len(eligible)
+        best_cost: float | None = None
+        best_range: tuple[int, int] | None = None
+        for i in range(n):
+            hours = 0.0
+            cost = 0.0
+            for j in range(i, n):
+                dur = eligible[j]["duration_hours"]
+                hours += dur
+                cost += eligible[j]["per_kwh"] * dur
+                if hours >= required_hours:
+                    if best_cost is None or cost < best_cost:
+                        best_cost = cost
+                        best_range = (i, j)
+                    break
+
+        if best_range is None:
+            return {e["start_time"] for e in eligible}
+        lo, hi = best_range
+        return {eligible[k]["start_time"] for k in range(lo, hi + 1)}
 
     def _interp_target_from_solar(
         self, high_soc: float, low_soc: float,
@@ -636,29 +701,48 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
     def _compute_overnight_target(self) -> float:
         """Return the overnight-phase GRID_CHARGE cap SOC.
 
-        Modest by design — cover the morning peak and bridge to solar while
-        leaving headroom for daytime solar to fill the rest for free. With
-        adaptive mode off, a fixed cap; with it on, interpolated from tomorrow's
-        Solcast (poor solar → higher cap, buy cheap overnight; strong solar →
-        lower cap, lean on the sun). Falls back to the fixed cap if Solcast is
-        unavailable.
+        Modest by design — cover the morning peak and bridge to solar. With
+        adaptive mode off, a fixed cap. With it on, the cap leaves headroom only
+        for the solar we actually expect to *export*: the exportable surplus is
+        tomorrow's forecast PV minus expected daytime site load. That surplus,
+        expressed as SOC, is subtracted from the ceiling.
+
+        This keys the cap off net position, not gross sun. A high-load site whose
+        load swallows all its solar has ~zero surplus, so it charges to the
+        ceiling overnight (buying cheap grid it would otherwise import at peak —
+        no solar is displaced). Only a genuinely sunny, low-load day shows a real
+        surplus, which pulls the cap down toward the floor so daytime solar fills
+        the pack for free instead of spilling to the grid at a poor feed-in
+        price. Falls back to the fixed cap if Solcast is unavailable.
         """
         fixed = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC]
         if not self._opts[OPT_GRID_CHARGE_ADAPTIVE]:
             return fixed
 
-        target = self._interp_target_from_solar(
-            self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC],
-            self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC],
-        )
-        if target is None:
+        entity_id = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
+        solar_kwh = self._get_state_float(entity_id) if entity_id else None
+        if solar_kwh is None:
             _LOGGER.debug(
                 "GRID_CHARGE adaptive: Solcast tomorrow unavailable — using fixed overnight cap %.0f%%",
                 fixed,
             )
             return fixed
-        _LOGGER.debug("GRID_CHARGE adaptive overnight cap %.1f%%", target)
-        return target
+
+        ceiling = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC]
+        floor = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC]
+        lo, hi = min(floor, ceiling), max(floor, ceiling)
+
+        daytime_load = self._opts[OPT_EXPECTED_DAYTIME_LOAD_KWH]
+        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
+        exportable_surplus_kwh = max(0.0, solar_kwh - daytime_load)
+        surplus_soc = (exportable_surplus_kwh / capacity_kwh) * 100 if capacity_kwh else 0.0
+
+        cap = round(max(lo, min(hi, ceiling - surplus_soc)), 1)
+        _LOGGER.debug(
+            "GRID_CHARGE adaptive overnight cap %.1f%% (PV %.1f − load %.1f = %.1f kWh surplus → −%.1f%% from ceiling %.0f%%)",
+            cap, solar_kwh, daytime_load, exportable_surplus_kwh, surplus_soc, ceiling,
+        )
+        return cap
 
     async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
         """Evaluate whether GRID_CHARGE should be active this cycle.
@@ -703,7 +787,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         self._grid_charge_target = target_soc
 
-        # Hysteresis: stop at target, don't start unless 1% below target
+        # Hysteresis: stop at target, don't restart until a configurable band
+        # below it. A wider band stops the mode re-triggering every cycle as load
+        # nibbles the pack just under target.
+        hysteresis = self._opts[OPT_GRID_CHARGE_HYSTERESIS_SOC]
         if self._current_mode == MODE_GRID_CHARGE:
             if mean_soc >= target_soc:
                 _LOGGER.info(
@@ -712,7 +799,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 )
                 return False
         else:
-            if mean_soc >= (target_soc - 1.0):
+            if mean_soc >= (target_soc - hysteresis):
                 return False
 
         soc_deficit = max(0.0, target_soc - mean_soc)

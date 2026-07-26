@@ -134,6 +134,16 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] `sensor.sentinel_grid_charge_target_soc` is now phase-aware — shows the active phase's target (overnight cap overnight, evening target during the day)
 - [ ] Deploy & test: confirm overnight charges to the cap at cheapest night intervals, then daytime tops up to the evening target after solar
 
+#### Optimizations from July 2026 history analysis (PENDING DEPLOY)
+Diagnosed from `history-2.csv` (July 15–25, high-load site: 100–185 kWh/day load vs 49 kWh pack). Overnight cap was being *hit* but set too low (~50%) by gross-solar interpolation; daytime top-up thrashed (GRID_CHARGE↔REBALANCE↔SELF_CONSUMPTION flipping every 30–60 s) and never reached the evening target.
+- [x] **Contiguous charge block**: `_select_cheapest_charge_window` now picks the single cheapest *contiguous* run covering `required_hours` (was N scattered globally-cheapest 5-min slots) — kills the on/off toggling that let REBALANCE steal the gaps
+- [x] **Rebalance suppressed during charge**: `_check_rebalance_conditions` returns False when `_grid_charge_active`/`_outage_prep_active` so the two packs don't fight the charger
+- [x] **Configurable hysteresis band** `OPT_GRID_CHARGE_HYSTERESIS_SOC` (default 3%, was hardcoded 1%) — stops re-trigger churn just under target (`number.…grid_charge_hysteresis_band`)
+- [x] **Overnight cap keyed off exportable surplus** (option 1 rework): `_compute_overnight_target` = ceiling − (forecast PV − `OPT_EXPECTED_DAYTIME_LOAD_KWH`) as SOC, clamped to [floor, ceiling]. High-load site → ~0 surplus → charges to ceiling (85%); only genuine sunny/low-load surplus pulls the cap down so solar fills the pack instead of exporting. Overnight high/low SOC entities are now ceiling/floor. New `number.…expected_daytime_load` (default 45 kWh)
+- [x] **Rebalance retamed**: `DEFAULT_REBALANCE_START_THRESHOLD` 7→10% (curbs all-day churn; 144 activations/10 days)
+- [x] **FAILSAFE debounce**: `FAILSAFE_DEBOUNCE_POLLS` (2) — a single missed poll holds the current mode instead of dropping to Maximum Self Consumption; HA-switch-off still trips immediately
+- [ ] Deploy & test: confirm daytime top-up sustains one block & reaches evening target; overnight cap tracks surplus; rebalance/failsafe churn drops
+
 ### Phase 4 — Price Spike Export
 - [ ] SPIKE_EXPORT mode with safety logic
 
