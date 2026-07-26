@@ -111,6 +111,11 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Grid limits are in kW (0–12) and backup SOC in % — a setpoint that differs
+# from the current value by less than this is treated as "already set" and the
+# write is skipped. Keeps redundant writes off the Sigen Modbus interface.
+WRITE_TOLERANCE = 0.05
+
 
 class SentinelCoordinator(DataUpdateCoordinator[dict]):
     """Sentinel Energy Manager coordinator."""
@@ -1175,18 +1180,71 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], limit)
 
     async def _call_service_set_mode(self, entity_id: str, mode: str) -> None:
-        """Set a battery mode via select service."""
+        """Set a battery mode via select service.
+
+        Skips the write when the target entity is unavailable (e.g. a plant
+        that has dropped off the network) or already in the requested mode.
+        Repeatedly writing to an unreachable Sigen gateway hammers its
+        single-connection Modbus interface and can knock it further offline,
+        so we never issue a write we know will fail or be a no-op.
+        """
+        if not self._plant_is_reachable_for(entity_id):
+            return
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return
+        if state.state == mode:
+            return
         await self.hass.services.async_call(
             "select", "select_option",
             {"entity_id": entity_id, "option": mode},
         )
 
     async def _call_service_set_limit(self, entity_id: str, value: float) -> None:
-        """Set a grid limit via number service."""
+        """Set a grid limit via number service.
+
+        Skips the write when the target entity is unavailable or already at
+        the requested value (within WRITE_TOLERANCE). This stops the FAILSAFE
+        re-apply loop from write-storming an offline plant and trims
+        steady-state Modbus writes to genuine setpoint changes only.
+        """
+        if not self._plant_is_reachable_for(entity_id):
+            return
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable"):
+            return
+        try:
+            current = float(state.state)
+        except (ValueError, TypeError):
+            current = None
+        if current is not None and abs(current - value) < WRITE_TOLERANCE:
+            return
         await self.hass.services.async_call(
             "number", "set_value",
             {"entity_id": entity_id, "value": value},
         )
+
+    def _plant_is_reachable_for(self, entity_id: str) -> bool:
+        """Whether the plant that owns `entity_id` is currently reachable.
+
+        The Sigen *number* entities (grid limits, backup SOC) keep reporting a
+        stale numeric value when their plant drops off the network — unlike the
+        sensors/select, which go unavailable. So gating a write on the target
+        entity's own availability isn't enough to stop FAILSAFE hammering an
+        offline plant. The plant's SOC sensor DOES go unavailable, so we use it
+        as the reachability signal for every write to that plant.
+        """
+        config = self.config_entry.data
+        plant2_targets = {
+            config[CONF_MODE_2], config[CONF_EXPORT_LIMIT_2],
+            config[CONF_IMPORT_LIMIT_2], config[CONF_BACKUP_SOC_2],
+        }
+        soc_entity = (
+            config[CONF_SOC_2] if entity_id in plant2_targets
+            else config[CONF_SOC_1]
+        )
+        soc = self.hass.states.get(soc_entity)
+        return soc is not None and soc.state not in ("unknown", "unavailable")
 
     def _get_state_float(self, entity_id: str) -> float | None:
         """Get a numeric state value."""
