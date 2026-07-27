@@ -13,8 +13,6 @@ from .const import (
     MODE_SOLAR_CURTAIL,
     MODE_GRID_CHARGE,
     MODE_OUTAGE_PREP,
-    OPT_GRID_CHARGE_ADAPTIVE,
-    DEFAULT_GRID_CHARGE_ADAPTIVE,
 )
 
 
@@ -61,15 +59,9 @@ SWITCH_DESCRIPTIONS = [
 ]
 
 
-OPTION_SWITCH_DESCRIPTIONS = [
-    SentinelOptionSwitchDescription(
-        key="grid_charge_adaptive_target",
-        name="Grid Charge Adaptive Target",
-        icon="mdi:sun-clock",
-        option_key=OPT_GRID_CHARGE_ADAPTIVE,
-        option_default=DEFAULT_GRID_CHARGE_ADAPTIVE,
-    ),
-]
+# No option switches at present. GRID_CHARGE is always adaptive (targets are
+# learned) — the old "Grid Charge Adaptive Target" toggle was removed in Stage 4.
+OPTION_SWITCH_DESCRIPTIONS: list[SentinelOptionSwitchDescription] = []
 
 
 async def async_setup_entry(

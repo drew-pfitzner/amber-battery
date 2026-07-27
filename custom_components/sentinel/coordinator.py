@@ -48,7 +48,6 @@ from .const import (
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
-    GRID_CHARGE_WINDOWS,
     GRID_CHARGE_MORNING_DEADLINE_HOUR,
     GRID_CHARGE_DAYTIME_START_HOUR,
     GRID_CHARGE_OVERNIGHT_START_HOUR,
@@ -73,41 +72,20 @@ from .const import (
     MODE_COMMAND_DISCHARGING_PV_FIRST,
     CONF_CAPACITY_KWH,
     CONF_AMBER_SITE_NAME,
-    OPT_GRID_CHARGE_TARGET_SOC,
-    OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
     OPT_GRID_CHARGE_HYSTERESIS_SOC,
-    OPT_GRID_CHARGE_ADAPTIVE,
-    OPT_GRID_CHARGE_SOLAR_LOW_KWH,
-    OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
-    OPT_GRID_CHARGE_TARGET_HIGH_SOC,
-    OPT_GRID_CHARGE_TARGET_LOW_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-    OPT_EXPECTED_DAYTIME_LOAD_KWH,
     OPT_GRID_CHARGE_MIN_RESERVE_SOC,
     OPT_GRID_CHARGE_MAX_SOC,
     OPT_OUTAGE_DATE,
     OPT_OUTAGE_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
     DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
-    DEFAULT_GRID_CHARGE_ADAPTIVE,
-    DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
-    DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
-    DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
-    DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-    DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
     DEFAULT_OUTAGE_TARGET_SOC,
     DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
     DEFAULT_GRID_CHARGE_MAX_SOC,
     DEFAULT_SEED_MORNING_KWH,
     DEFAULT_SEED_EVENING_KWH,
+    DEFAULT_SEED_DAYTIME_KWH,
     CONF_SOLCAST_TOMORROW,
     FAILSAFE_DEBOUNCE_POLLS,
     OUTAGE_PREP_START_HOUR,
@@ -168,7 +146,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._forecast_cache: list[dict] | None = None
         self._forecast_cache_time: datetime | None = None
         self._grid_charge_active: bool = False
-        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_TARGET_SOC
+        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_MAX_SOC
         self._outage_prep_active: bool = False
         # Consecutive polls with a critical entity unavailable (FAILSAFE debounce)
         self._unavailable_count: int = 0
@@ -201,47 +179,11 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: options.get(
                 OPT_SOLAR_CURTAIL_PRICE_THRESHOLD, DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
             ),
-            OPT_GRID_CHARGE_TARGET_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_SOC, DEFAULT_GRID_CHARGE_TARGET_SOC,
-            ),
-            OPT_GRID_CHARGE_DEADLINE_HOUR: options.get(
-                OPT_GRID_CHARGE_DEADLINE_HOUR, DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
-            ),
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
             ),
             OPT_GRID_CHARGE_HYSTERESIS_SOC: options.get(
                 OPT_GRID_CHARGE_HYSTERESIS_SOC, DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
-            ),
-            OPT_GRID_CHARGE_ADAPTIVE: options.get(
-                OPT_GRID_CHARGE_ADAPTIVE, DEFAULT_GRID_CHARGE_ADAPTIVE,
-            ),
-            OPT_GRID_CHARGE_SOLAR_LOW_KWH: options.get(
-                OPT_GRID_CHARGE_SOLAR_LOW_KWH, DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
-            ),
-            OPT_GRID_CHARGE_SOLAR_HIGH_KWH: options.get(
-                OPT_GRID_CHARGE_SOLAR_HIGH_KWH, DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
-            ),
-            OPT_GRID_CHARGE_TARGET_HIGH_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_HIGH_SOC, DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
-            ),
-            OPT_GRID_CHARGE_TARGET_LOW_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_LOW_SOC, DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-            ),
-            OPT_EXPECTED_DAYTIME_LOAD_KWH: options.get(
-                OPT_EXPECTED_DAYTIME_LOAD_KWH, DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
             ),
             OPT_GRID_CHARGE_MIN_RESERVE_SOC: options.get(
                 OPT_GRID_CHARGE_MIN_RESERVE_SOC, DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
@@ -416,9 +358,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH), 2,
                 ),
                 "learned_daytime_load": round(
-                    self._learner.daytime_kwh(
-                        self._opts[OPT_EXPECTED_DAYTIME_LOAD_KWH]
-                    ), 2,
+                    self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH), 2,
                 ),
                 "learned_evening_load": round(
                     self._learner.evening_kwh(DEFAULT_SEED_EVENING_KWH), 2,
@@ -577,18 +517,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.warning("Failed to fetch Amber forecasts: %s", err)
             return None
 
-    @staticmethod
-    def _in_grid_charge_window(when: datetime) -> bool:
-        """True if `when` falls inside an allowed off-peak GRID_CHARGE window."""
-        h = when.hour + when.minute / 60.0
-        for start_h, end_h in GRID_CHARGE_WINDOWS:
-            if start_h < end_h:
-                if start_h <= h < end_h:
-                    return True
-            elif h >= start_h or h < end_h:  # window wraps past midnight
-                return True
-        return False
-
     def _select_cheapest_charge_window(
         self, forecasts: list[dict], required_hours: float, deadline: datetime,
     ) -> set[str]:
@@ -703,9 +631,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         ceiling = self._opts[OPT_GRID_CHARGE_MAX_SOC]
 
         morning_kwh = self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH)
-        daytime_kwh = self._learner.daytime_kwh(
-            self._opts[OPT_EXPECTED_DAYTIME_LOAD_KWH]
-        )
+        daytime_kwh = self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH)
         floor = max(min_reserve, min(ceiling, self._kwh_to_soc(morning_kwh)))
 
         solar_entity = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
