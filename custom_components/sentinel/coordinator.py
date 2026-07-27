@@ -51,6 +51,12 @@ from .const import (
     GRID_CHARGE_WINDOWS,
     GRID_CHARGE_MORNING_DEADLINE_HOUR,
     GRID_CHARGE_DAYTIME_START_HOUR,
+    GRID_CHARGE_OVERNIGHT_START_HOUR,
+    FALLBACK_EVENING_PEAK_HOUR,
+    PEAK_DETECT_FACTOR,
+    PEAK_DETECT_BASELINE_PCTL,
+    MORNING_PEAK_BAND,
+    EVENING_PEAK_BAND,
     PV_POWER_1,
     PV_POWER_2,
     LOAD_POWER_1,
@@ -161,6 +167,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._unavailable_count: int = 0
         # Monotonic timestamp of the last Modbus-backed write, for write pacing.
         self._last_write_monotonic: float = 0.0
+        # Detected next price-peak onsets (datetimes), for GRID_CHARGE deadlines
+        # and visibility sensors. None until the first evaluation.
+        self._next_morning_peak: datetime | None = None
+        self._next_evening_peak: datetime | None = None
 
     def _load_options(self):
         """Load options from config entry (options override data)."""
@@ -380,6 +390,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 ),
                 "grid_charge_target": self._grid_charge_target,
                 "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
+                "next_morning_peak": self._next_morning_peak,
+                "next_evening_peak": self._next_evening_peak,
             }
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
@@ -573,9 +585,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
                 if start_dt is None or end_dt is None:
                     continue
-                # Include if: start >= now AND end <= deadline AND inside an
-                # off-peak charge window (so peak intervals never get selected).
-                if start_dt >= now and end_dt <= deadline and self._in_grid_charge_window(start_dt):
+                # Include if start >= now AND end <= deadline. The deadline is the
+                # next price-peak onset, so every eligible interval is pre-peak
+                # (off-peak) by construction — no separate window gate needed.
+                if start_dt >= now and end_dt <= deadline:
                     eligible.append({
                         "start_time": start_str,
                         "start_dt": start_dt,
@@ -720,46 +733,155 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         )
         return cap
 
+    @staticmethod
+    def _next_hour_after(now: datetime, hour: int) -> datetime:
+        """The next occurrence of `hour`:00 local time strictly after `now`."""
+        cand = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if cand <= now:
+            cand += timedelta(days=1)
+        return cand
+
+    @staticmethod
+    def _percentile(values: list[float], q: float) -> float:
+        """Simple nearest-rank percentile (q in 0..1)."""
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        idx = int(q * (len(ordered) - 1))
+        return ordered[idx]
+
+    def _detect_peak_onset(
+        self,
+        forecasts: list[dict] | None,
+        now: datetime,
+        band: tuple[int, int],
+        fallback_hour: int,
+    ) -> tuple[datetime, bool]:
+        """Detect the next price-peak onset within a time-of-day `band`.
+
+        Returns (onset_datetime, is_fallback). The onset is the start of the next
+        forecast interval — occurring after `now`, with its local hour inside
+        `band` — whose price steps above a low-percentile baseline (× factor) or
+        is flagged high/spike by Amber, and which is *sustained* (the following
+        interval is peak too, so a lone blip doesn't trigger). When no forecast or
+        no qualifying peak is found, falls back to the next `fallback_hour`.
+        """
+        fallback = self._next_hour_after(now, fallback_hour)
+        if not forecasts:
+            return fallback, True
+
+        parsed: list[tuple[datetime, float, str]] = []
+        prices: list[float] = []
+        for interval in forecasts:
+            start = dt_util.parse_datetime(interval.get("start_time", "") or "")
+            if start is None:
+                continue
+            try:
+                price = float(interval.get("per_kwh"))
+            except (TypeError, ValueError):
+                continue
+            start = dt_util.as_local(start)
+            desc = str(interval.get("descriptor", "")).lower()
+            parsed.append((start, price, desc))
+            prices.append(price)
+
+        if not parsed:
+            return fallback, True
+
+        parsed.sort(key=lambda x: x[0])
+        baseline = self._percentile(prices, PEAK_DETECT_BASELINE_PCTL)
+        threshold = baseline * PEAK_DETECT_FACTOR
+        band_start, band_end = band
+
+        def is_peak(price: float, desc: str) -> bool:
+            return price >= threshold or desc in ("high", "spike", "extremehigh")
+
+        n = len(parsed)
+        for i, (start, price, desc) in enumerate(parsed):
+            if start <= now:
+                continue
+            if not (band_start <= start.hour < band_end):
+                continue
+            if not is_peak(price, desc):
+                continue
+            # Must be the START of a peak run — the previous interval is not peak.
+            # This stops a mid-peak interval being read as a fresh onset (which
+            # would make the charger think a new peak is 30 min away and charge
+            # right through the peak we're already in).
+            if i == 0 or is_peak(parsed[i - 1][1], parsed[i - 1][2]):
+                continue
+            # Sustained: require the next interval to be peak too (unless last),
+            # so a lone one-interval price blip doesn't count as a peak.
+            if i + 1 < n:
+                _, next_price, next_desc = parsed[i + 1]
+                if not is_peak(next_price, next_desc):
+                    continue
+            _LOGGER.debug(
+                "Peak onset detected %s @ $%.4f/kWh (baseline $%.4f × %.1f = $%.4f)",
+                start.strftime("%a %H:%M"), price, baseline, PEAK_DETECT_FACTOR, threshold,
+            )
+            return start, False
+
+        return fallback, True
+
+    def _resolve_charge_phase(
+        self, now: datetime, morning_onset: datetime, evening_onset: datetime,
+    ) -> tuple[str | None, datetime | None]:
+        """Which pre-peak charge window (if any) `now` falls in, and its deadline.
+
+        - Daytime window: [09:00 on the evening peak's day, evening_onset).
+        - Overnight window: [22:00 the evening before the morning peak, morning_onset).
+        Returns (None, None) when `now` is inside a peak period or between windows.
+        """
+        daytime_start = evening_onset.replace(
+            hour=GRID_CHARGE_DAYTIME_START_HOUR, minute=0, second=0, microsecond=0,
+        )
+        if daytime_start <= now < evening_onset:
+            return "daytime", evening_onset
+
+        overnight_start = morning_onset.replace(
+            hour=GRID_CHARGE_OVERNIGHT_START_HOUR, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=1)
+        if overnight_start <= now < morning_onset:
+            return "overnight", morning_onset
+
+        return None, None
+
     async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
         """Evaluate whether GRID_CHARGE should be active this cycle.
 
-        Runs in two phases, chosen by which off-peak window `now` falls in:
-        - Overnight (22:00–06:00): charge toward the overnight cap by the 06:00
-          morning peak. A 06:00 deadline means the midday window can never steal
-          the overnight charge.
-        - Daytime (09:00–16:00): let solar charge first, top up toward the
-          evening target by the evening deadline.
+        Two phases, each charging toward its target by the *detected* onset of the
+        next price peak (not a fixed clock hour):
+        - Overnight: charge toward the overnight cap by the morning-peak onset.
+        - Daytime: let solar charge first, top up toward the evening target by the
+          evening-peak onset (which shifts later in summer as the tariff peak does).
+        Outside both pre-peak windows (i.e. during a peak) GRID_CHARGE is inactive.
         """
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
         now = dt_util.now()
 
-        # Only grid-charge inside the off-peak windows — never during network
-        # peak periods, even when forced.
-        if not self._in_grid_charge_window(now):
-            _LOGGER.debug("GRID_CHARGE: %02d:%02d outside off-peak windows", now.hour, now.minute)
-            # Keep the exposed target sensor meaningful while idle.
+        forecasts = await self._async_fetch_amber_forecasts()
+
+        morning_onset, _m_fb = self._detect_peak_onset(
+            forecasts, now, MORNING_PEAK_BAND, GRID_CHARGE_MORNING_DEADLINE_HOUR,
+        )
+        evening_onset, _e_fb = self._detect_peak_onset(
+            forecasts, now, EVENING_PEAK_BAND, FALLBACK_EVENING_PEAK_HOUR,
+        )
+        self._next_morning_peak = morning_onset
+        self._next_evening_peak = evening_onset
+
+        phase, deadline = self._resolve_charge_phase(now, morning_onset, evening_onset)
+        if phase == "overnight":
+            target_soc = self._compute_overnight_target()
+        elif phase == "daytime":
+            target_soc = self._compute_grid_charge_target()
+        else:
+            # Inside a peak period / between windows — don't charge. Keep the
+            # exposed target sensor meaningful while idle.
             self._grid_charge_target = self._compute_grid_charge_target()
             return False
-
-        # Select phase, target and deadline from the current off-peak window.
-        h = now.hour + now.minute / 60.0
-        if h >= 22 or h < GRID_CHARGE_MORNING_DEADLINE_HOUR:
-            phase = "overnight"
-            target_soc = self._compute_overnight_target()
-            deadline = now.replace(
-                hour=GRID_CHARGE_MORNING_DEADLINE_HOUR, minute=0, second=0, microsecond=0,
-            )
-        else:
-            phase = "daytime"
-            target_soc = self._compute_grid_charge_target()
-            deadline = now.replace(
-                hour=int(self._opts[OPT_GRID_CHARGE_DEADLINE_HOUR]),
-                minute=0, second=0, microsecond=0,
-            )
-        if deadline <= now:
-            # Deadline hour has passed today — roll to the same hour tomorrow.
-            deadline += timedelta(days=1)
 
         self._grid_charge_target = target_soc
 
@@ -784,24 +906,27 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return False
 
         hours_remaining = (deadline - now).total_seconds() / 3600
+        if hours_remaining <= 0:
+            return False
 
-        # Forced charge: not enough cheap time left to be selective
+        # Forced charge: not enough cheap time left before the peak to be selective
         if hours_remaining < required_hours * 1.5:
             _LOGGER.info(
-                "GRID_CHARGE forced (%s): %.2fh remaining < %.2fh required × 1.5",
-                phase, hours_remaining, required_hours,
+                "GRID_CHARGE forced (%s): %.2fh to peak %s < %.2fh required × 1.5",
+                phase, hours_remaining, deadline.strftime("%a %H:%M"), required_hours,
             )
             return True
 
-        forecasts = await self._async_fetch_amber_forecasts()
-        if forecasts is None:
+        # No forecast → can't select cheap intervals; only the forced path above
+        # (which needs none) can act. Stay idle rather than charge blindly.
+        if not forecasts:
             return False
 
         selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline)
         if not selected:
             _LOGGER.debug(
-                "GRID_CHARGE (%s): no eligible intervals before %02d:00",
-                phase, deadline.hour,
+                "GRID_CHARGE (%s): no eligible intervals before peak %s",
+                phase, deadline.strftime("%a %H:%M"),
             )
             return False
 

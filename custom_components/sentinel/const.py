@@ -135,11 +135,28 @@ DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 # wraps past midnight. Applies to all GRID_CHARGE paths, including forced charge.
 GRID_CHARGE_WINDOWS = ((22, 6), (9, 16))    # 10 PM–6 AM and 9 AM–4 PM
 
-# GRID_CHARGE phase boundaries (local hour). The overnight phase charges toward
-# the overnight cap by the morning peak; the daytime phase tops up toward the
-# evening target by the evening deadline (grid_charge_deadline_hour).
-GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — overnight phase completes by here
+# GRID_CHARGE phase boundaries (local hour). The overnight charge window opens
+# at 22:00 (after the evening peak); the daytime window opens at 09:00 (after the
+# morning peak). Each window CLOSES at the next detected price-peak onset — see
+# peak-onset detection below — so the deadline tracks the seasonal shift of the
+# tariff peak instead of a fixed clock hour.
+GRID_CHARGE_OVERNIGHT_START_HOUR = 22       # 10 PM — overnight charge window opens
 GRID_CHARGE_DAYTIME_START_HOUR = 9          # 9 AM — daytime top-up window opens
+# Fallback peak hours, used when the Amber forecast is unavailable or shows no
+# clear peak. These reproduce the previous fixed-hour behaviour.
+GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — fallback morning-peak onset
+FALLBACK_EVENING_PEAK_HOUR = 16             # 4 PM — fallback evening-peak onset
+
+# Peak-onset detection. The GRID_CHARGE deadline is the start of the next
+# price-peak period, detected from the Amber forecast so it follows the tariff's
+# seasonal shift. An interval counts as "peak" when its price is at least
+# PEAK_DETECT_FACTOR × a low-percentile baseline of the forecast horizon, or Amber
+# flags it high/spike. Onset must be sustained (the next interval is peak too) to
+# ignore lone blips. Each onset is searched for only within its time-of-day band.
+PEAK_DETECT_FACTOR = 1.4                     # price ≥ baseline × this ⇒ peak
+PEAK_DETECT_BASELINE_PCTL = 0.30             # baseline = this percentile of prices
+MORNING_PEAK_BAND = (4, 11)                  # search 04:00–11:00 for morning onset
+EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening onset
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"
