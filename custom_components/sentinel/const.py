@@ -10,12 +10,10 @@ FAILSAFE_DEBOUNCE_POLLS = 2
 
 # Mode constants
 MODE_FAILSAFE = "FAILSAFE"
-MODE_SPIKE_EXPORT = "SPIKE_EXPORT"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
 MODE_SOLAR_CURTAIL = "SOLAR_CURTAIL"
-MODE_MORNING_FLOOR = "MORNING_FLOOR"
 MODE_SELF_CONSUMPTION = "SELF_CONSUMPTION"
 
 # Config entry keys (for Sigen entity IDs)
@@ -62,9 +60,6 @@ OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
 # Options keys — solar curtail
 OPT_SOLAR_CURTAIL_PRICE_THRESHOLD = "solar_curtail_price_threshold"
 
-# Options keys — morning floor
-OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
-
 # Options keys — grid charge
 OPT_GRID_CHARGE_TARGET_SOC = "grid_charge_target_soc"
 OPT_GRID_CHARGE_DEADLINE_HOUR = "grid_charge_deadline_hour"
@@ -109,7 +104,6 @@ DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 10.0  # % — wider start band curbs all-day rebalance churn
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
-DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
 DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below this feed-in price
 DEFAULT_GRID_CHARGE_TARGET_SOC = 85.0       # %
 DEFAULT_GRID_CHARGE_DEADLINE_HOUR = 17      # 5 PM local time
@@ -131,7 +125,6 @@ DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)
 OUTAGE_PREP_START_HOUR = 22                 # 10 PM on day before
 OUTAGE_PREP_END_HOUR = 6                    # 6 AM on outage day
-DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 12.0            # kW — full inverter capacity; Sigen throttles to its own internal limit
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
@@ -147,12 +140,6 @@ GRID_CHARGE_WINDOWS = ((22, 6), (9, 16))    # 10 PM–6 AM and 9 AM–4 PM
 # evening target by the evening deadline (grid_charge_deadline_hour).
 GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — overnight phase completes by here
 GRID_CHARGE_DAYTIME_START_HOUR = 9          # 9 AM — daytime top-up window opens
-
-# Morning floor time window
-MORNING_FLOOR_START_HOUR = 22   # 10 PM
-MORNING_FLOOR_START_MINUTE = 10
-MORNING_FLOOR_END_HOUR = 5      # 5 AM
-MORNING_FLOOR_END_MINUTE = 50
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"

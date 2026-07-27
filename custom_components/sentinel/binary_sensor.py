@@ -23,7 +23,6 @@ async def async_setup_entry(
         SentinelFailsafeActiveSensor(coordinator),
         SentinelRebalancingActiveSensor(coordinator),
         SentinelSolarCurtailActiveSensor(coordinator),
-        SentinelMorningFloorActiveSensor(coordinator),
         SentinelGridChargingActiveSensor(coordinator),
         SentinelOutagePrepActiveSensor(coordinator),
     ]
@@ -81,24 +80,6 @@ class SentinelSolarCurtailActiveSensor(CoordinatorEntity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         """Return True if solar curtail is active."""
         return self.coordinator.data.get("solar_curtail_active", False)
-
-
-class SentinelMorningFloorActiveSensor(CoordinatorEntity, BinarySensorEntity):
-    """Binary sensor showing if morning floor mode is active."""
-
-    def __init__(self, coordinator):
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{DOMAIN}_morning_floor_active"
-        self._attr_name = "Morning Floor Active"
-        self._attr_device_class = BinarySensorDeviceClass.RUNNING
-        self._attr_icon = "mdi:battery-arrow-up"
-        self._attr_device_info = coordinator.device_info
-
-    @property
-    def is_on(self) -> bool | None:
-        """Return True if morning floor is active."""
-        return self.coordinator.data.get("morning_floor_active", False)
 
 
 class SentinelGridChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):

@@ -1,7 +1,9 @@
 """Sentinel Energy Manager coordinator."""
 
+import asyncio
 from datetime import date, datetime, time, timedelta
 import logging
+from time import monotonic
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -14,12 +16,10 @@ from .const import (
     DOMAIN,
     SCAN_INTERVAL_SECONDS,
     MODE_FAILSAFE,
-    MODE_SPIKE_EXPORT,
     MODE_OUTAGE_PREP,
     MODE_GRID_CHARGE,
     MODE_REBALANCE,
     MODE_SOLAR_CURTAIL,
-    MODE_MORNING_FLOOR,
     MODE_SELF_CONSUMPTION,
     CONF_SOC_1,
     CONF_MODE_1,
@@ -41,23 +41,16 @@ from .const import (
     OPT_REBALANCE_STOP_THRESHOLD,
     OPT_REBALANCE_TRANSFER_RATE,
     OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
-    OPT_MORNING_FLOOR_SOC,
     DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
-    DEFAULT_MORNING_FLOOR_SOC,
-    DEFAULT_NORMAL_BACKUP_SOC,
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
     GRID_CHARGE_WINDOWS,
     GRID_CHARGE_MORNING_DEADLINE_HOUR,
     GRID_CHARGE_DAYTIME_START_HOUR,
-    MORNING_FLOOR_START_HOUR,
-    MORNING_FLOOR_START_MINUTE,
-    MORNING_FLOOR_END_HOUR,
-    MORNING_FLOOR_END_MINUTE,
     PV_POWER_1,
     PV_POWER_2,
     LOAD_POWER_1,
@@ -116,6 +109,14 @@ _LOGGER = logging.getLogger(__name__)
 # write is skipped. Keeps redundant writes off the Sigen Modbus interface.
 WRITE_TOLERANCE = 0.05
 
+# Minimum spacing between consecutive Modbus-backed writes to the Sigen gateways.
+# Each dongle has a single-connection Modbus interface that can be knocked offline
+# by a burst of commands, so a mode change (which may touch several controls) is
+# trickled out one write at a time with at least this gap between them, and each
+# write is awaited to completion before the next is issued. A full ~8-write mode
+# change therefore spreads over a few seconds — comfortably inside the 30 s cycle.
+WRITE_MIN_GAP_SECONDS = 0.4
+
 
 class SentinelCoordinator(DataUpdateCoordinator[dict]):
     """Sentinel Energy Manager coordinator."""
@@ -137,9 +138,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._mode_enabled = {
             MODE_REBALANCE: config_entry.options.get("rebalance_enabled", False),
             MODE_SOLAR_CURTAIL: config_entry.options.get("solar_curtail_enabled", False),
-            MODE_MORNING_FLOOR: config_entry.options.get("morning_floor_enabled", False),
             MODE_GRID_CHARGE: config_entry.options.get("grid_charge_enabled", False),
-            MODE_SPIKE_EXPORT: config_entry.options.get("spike_export_enabled", False),
             MODE_OUTAGE_PREP: config_entry.options.get("outage_prep_enabled", False),
         }
 
@@ -160,6 +159,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._outage_prep_active: bool = False
         # Consecutive polls with a critical entity unavailable (FAILSAFE debounce)
         self._unavailable_count: int = 0
+        # Monotonic timestamp of the last Modbus-backed write, for write pacing.
+        self._last_write_monotonic: float = 0.0
 
     def _load_options(self):
         """Load options from config entry (options override data)."""
@@ -180,9 +181,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             ),
             OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: options.get(
                 OPT_SOLAR_CURTAIL_PRICE_THRESHOLD, DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
-            ),
-            OPT_MORNING_FLOOR_SOC: options.get(
-                OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
             ),
             OPT_GRID_CHARGE_TARGET_SOC: options.get(
                 OPT_GRID_CHARGE_TARGET_SOC, DEFAULT_GRID_CHARGE_TARGET_SOC,
@@ -328,9 +326,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
                 if new_mode != self._current_mode:
                     _LOGGER.info("Mode change: %s -> %s", self._current_mode, new_mode)
-                    # Restore backup SOC when leaving morning floor
-                    if self._current_mode == MODE_MORNING_FLOOR:
-                        await self._restore_backup_soc()
                     # Restore grid limits when leaving grid charge / outage prep
                     if self._current_mode in (MODE_GRID_CHARGE, MODE_OUTAGE_PREP):
                         await self._restore_all_grid_limits()
@@ -380,7 +375,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
                 "solar_curtail_active": self._current_mode == MODE_SOLAR_CURTAIL,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,
-                "morning_floor_active": self._current_mode == MODE_MORNING_FLOOR,
                 "grid_charging_active": self._current_mode in (
                     MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
                 ),
@@ -402,41 +396,28 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         """Evaluate priority and return the highest-priority valid mode."""
         # Priority 1: FAILSAFE — already handled in _async_update_data
 
-        # Priority 2: SPIKE_EXPORT (stub)
-        if self.is_mode_enabled(MODE_SPIKE_EXPORT):
-            if self._check_spike_export_conditions():
-                return MODE_SPIKE_EXPORT
-
-        # Priority 3: OUTAGE_PREP (stub)
+        # Priority 2: OUTAGE_PREP
         if self.is_mode_enabled(MODE_OUTAGE_PREP):
             if self._check_outage_prep_conditions():
                 return MODE_OUTAGE_PREP
 
-        # Priority 4: GRID_CHARGE (stub)
+        # Priority 3: GRID_CHARGE (two-peak charger)
         if self.is_mode_enabled(MODE_GRID_CHARGE):
             if self._check_grid_charge_conditions():
                 return MODE_GRID_CHARGE
 
-        # Priority 5: REBALANCE
+        # Priority 4: REBALANCE
         if self.is_mode_enabled(MODE_REBALANCE):
             if self._check_rebalance_conditions(soc_1, soc_2, backup_soc_1, backup_soc_2):
                 return MODE_REBALANCE
 
-        # Priority 6: SOLAR_CURTAIL
+        # Priority 5: SOLAR_CURTAIL
         if self.is_mode_enabled(MODE_SOLAR_CURTAIL):
             if self._check_solar_curtail_conditions():
                 return MODE_SOLAR_CURTAIL
 
-        # Priority 7: MORNING_FLOOR
-        if self.is_mode_enabled(MODE_MORNING_FLOOR):
-            if self._check_morning_floor_conditions(mean_soc):
-                return MODE_MORNING_FLOOR
-
-        # Priority 8: SELF_CONSUMPTION (always valid)
+        # Priority 6: SELF_CONSUMPTION (always valid)
         return MODE_SELF_CONSUMPTION
-
-    def _check_spike_export_conditions(self) -> bool:
-        return False
 
     def _check_outage_prep_conditions(self) -> bool:
         return self._outage_prep_active
@@ -508,16 +489,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return False
 
         return True
-
-    def _check_morning_floor_conditions(self, mean_soc: float) -> bool:
-        """Check if MORNING_FLOOR conditions are met (inside overnight window)."""
-        now = dt_util.now()
-        t = now.hour * 60 + now.minute
-        start = MORNING_FLOOR_START_HOUR * 60 + MORNING_FLOOR_START_MINUTE  # 22:10
-        end = MORNING_FLOOR_END_HOUR * 60 + MORNING_FLOOR_END_MINUTE        # 05:50
-
-        # Window spans midnight: active if past start OR before end
-        return t >= start or t < end
 
     async def _async_fetch_amber_forecasts(self) -> list[dict] | None:
         """Fetch Amber forecasts, using a 15-minute cache."""
@@ -1041,8 +1012,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             await self._async_apply_rebalance()
         elif mode == MODE_SOLAR_CURTAIL:
             await self._async_apply_solar_curtail()
-        elif mode == MODE_MORNING_FLOOR:
-            await self._async_apply_morning_floor()
         elif mode == MODE_GRID_CHARGE:
             await self._async_apply_grid_charge()
         elif mode == MODE_OUTAGE_PREP:
@@ -1094,20 +1063,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
         await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
-    async def _async_apply_morning_floor(self) -> None:
-        """MORNING_FLOOR: raise backup SOC to floor, stay in self-consumption.
-
-        The battery's built-in ESS logic will grid-charge to maintain the
-        backup SOC floor.  No need to switch to Grid First mode.
-        """
-        config = self.config_entry.data
-        floor_soc = self._opts[OPT_MORNING_FLOOR_SOC]
-
-        await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
-        await self._restore_all_grid_limits()
-        await self._call_service_set_limit(config[CONF_BACKUP_SOC_1], floor_soc)
-        await self._call_service_set_limit(config[CONF_BACKUP_SOC_2], floor_soc)
-
     async def _async_apply_grid_charge(self) -> None:
         """GRID_CHARGE: both batteries Command Charging (PV First) at configured rate.
 
@@ -1149,16 +1104,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
-    async def _restore_backup_soc(self) -> None:
-        """Restore backup SOC to normal value when leaving morning floor."""
-        config = self.config_entry.data
-        await self._call_service_set_limit(
-            config[CONF_BACKUP_SOC_1], DEFAULT_NORMAL_BACKUP_SOC,
-        )
-        await self._call_service_set_limit(
-            config[CONF_BACKUP_SOC_2], DEFAULT_NORMAL_BACKUP_SOC,
-        )
-
     async def _async_apply_self_consumption(self) -> None:
         """SELF_CONSUMPTION: both batteries to normal mode, restore limits."""
         await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
@@ -1195,7 +1140,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return
         if state.state == mode:
             return
-        await self.hass.services.async_call(
+        await self._paced_service_call(
             "select", "select_option",
             {"entity_id": entity_id, "option": mode},
         )
@@ -1219,10 +1164,33 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             current = None
         if current is not None and abs(current - value) < WRITE_TOLERANCE:
             return
-        await self.hass.services.async_call(
+        await self._paced_service_call(
             "number", "set_value",
             {"entity_id": entity_id, "value": value},
         )
+
+    async def _paced_service_call(
+        self, domain: str, service: str, data: dict
+    ) -> None:
+        """Issue a Modbus-backed service call, paced so the Sigen dongles are
+        never hit with a burst of commands.
+
+        The gateways have a single-connection Modbus interface that can be
+        knocked offline by too many writes at once. Every actual write to a
+        plant routes through here: consecutive writes are spaced by at least
+        WRITE_MIN_GAP_SECONDS, and each is awaited to completion (blocking)
+        before the next is dispatched, so a multi-control mode change trickles
+        out one Modbus transaction at a time instead of all at once.
+        """
+        gap = WRITE_MIN_GAP_SECONDS - (monotonic() - self._last_write_monotonic)
+        if gap > 0:
+            await asyncio.sleep(gap)
+        try:
+            await self.hass.services.async_call(
+                domain, service, data, blocking=True,
+            )
+        finally:
+            self._last_write_monotonic = monotonic()
 
     def _plant_is_reachable_for(self, entity_id: str) -> bool:
         """Whether the plant that owns `entity_id` is currently reachable.

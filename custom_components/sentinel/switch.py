@@ -11,9 +11,7 @@ from .const import (
     DOMAIN,
     MODE_REBALANCE,
     MODE_SOLAR_CURTAIL,
-    MODE_MORNING_FLOOR,
     MODE_GRID_CHARGE,
-    MODE_SPIKE_EXPORT,
     MODE_OUTAGE_PREP,
     OPT_GRID_CHARGE_ADAPTIVE,
     DEFAULT_GRID_CHARGE_ADAPTIVE,
@@ -49,22 +47,10 @@ SWITCH_DESCRIPTIONS = [
         mode_key=MODE_SOLAR_CURTAIL,
     ),
     SentinelSwitchDescription(
-        key="morning_floor_enabled",
-        name="Enable Morning Floor",
-        icon="mdi:power-sleep",
-        mode_key=MODE_MORNING_FLOOR,
-    ),
-    SentinelSwitchDescription(
         key="grid_charge_enabled",
         name="Enable Grid Charging",
         icon="mdi:battery-charging",
         mode_key=MODE_GRID_CHARGE,
-    ),
-    SentinelSwitchDescription(
-        key="spike_export_enabled",
-        name="Enable Spike Export",
-        icon="mdi:lightning-bolt",
-        mode_key=MODE_SPIKE_EXPORT,
     ),
     SentinelSwitchDescription(
         key="outage_prep_enabled",
