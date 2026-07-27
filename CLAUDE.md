@@ -41,34 +41,60 @@ Both phases feed one meter — meter sees **net** of both phases. During rebalan
 
 ## Sentinel Architecture
 
-Custom HA integration: 8-mode priority stack evaluated every 30 seconds.
+Custom HA integration: **6-mode** priority stack evaluated every 30 seconds. First
+mode whose trigger is true wins and is the only one to write controls that cycle.
+
+> Redesigned July 2026 (`OPTIMISATION_PLAN.md`, branch
+> `feature/self-running-optimisation`). SPIKE_EXPORT and MORNING_FLOOR were
+> **removed**; GRID_CHARGE became a single self-tuning two-peak charger. See
+> `CONTROL_LOGIC.md` for the full decision tree.
 
 | Priority | Mode | Trigger |
 |---|---|---|
-| 1 | **FAILSAFE** | Any Sigen entity unavailable OR HA switch off → Maximum Self Consumption |
-| 2 | **SPIKE_EXPORT** | Amber spike + SOC above floor + buffer → discharge at configurable rate |
-| 3 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
-| 4 | **GRID_CHARGE** | Two phases — overnight (charge to cap by 06:00) + daytime top-up (to evening target by deadline) → charge at cheapest window or force if time-pressed |
-| 5 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
-| 6 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
-| 7 | **MORNING_FLOOR** | 22:00–06:00 + predicted 6am SOC < floor → gentle overnight charge |
-| 8 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
+| 1 | **FAILSAFE** | Any Sigen critical entity unavailable ≥2 polls OR HA switch off → Maximum Self Consumption + 12/12 limits |
+| 2 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
+| 3 | **GRID_CHARGE** | Two-peak charger: detects the next **price-peak onset** from the Amber forecast and charges to a **learned** seasonal target (evening) / adaptive overnight cap (morning) in the cheapest window before it; forces if time-pressed |
+| 4 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
+| 5 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
+| 6 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
 
 ### Key Design Decisions
 
 - All mode switches default **OFF** for safety — user must enable each mode
-- Failsafe always restores batteries to Maximum Self Consumption + 12 kW limits
-- Rebalance uses hysteresis: start threshold (default 7%) vs stop threshold (default 3%)
-- Rebalance uses PV First modes for both charge and discharge — solar is automatically prioritised, no suppression needed
-- Rebalance requires grid connection on both plants (disabled during grid outage)
-- Solar curtail sets export limit to 0 kW when Amber feed-in price < threshold — inverters curtail solar to match load + battery charging only
+- **Write pacing:** every Modbus-backed write routes through `_paced_service_call`
+  — consecutive writes are ≥`WRITE_MIN_GAP_SECONDS` (0.4 s) apart and awaited to
+  completion, so a multi-control mode change trickles out one command at a time
+  instead of flooding a single-connection Sigen dongle. No-op writes (already at
+  value) and offline-plant writes are still skipped, so steady state = 0 writes.
+- Failsafe always restores batteries to Maximum Self Consumption + 12 kW limits;
+  debounced by `FAILSAFE_DEBOUNCE_POLLS` (2) so a single missed poll holds mode
+- **GRID_CHARGE targets are learned, not set:** a `LoadLearner` (`learning.py`)
+  integrates combined load each cycle into morning/daytime/evening windows and
+  keeps a trailing 14-day average (persisted via Store). Evening target = learned
+  evening-peak load as SOC; overnight floor = learned morning-peak load; overnight
+  cap = `max_charge` − exportable solar surplus (Solcast tomorrow − learned
+  daytime load). Clamped to `[min_reserve, max_charge]`. Seeds until 1 day learned.
+- **GRID_CHARGE deadline is the price jump, detected:** `_detect_peak_onset`
+  finds the start of the next sustained peak run (price ≥ baseline×`PEAK_DETECT_FACTOR`
+  or Amber high/spike) within a morning/evening band; the charge window closes
+  there, so the "be charged by" time tracks the tariff's seasonal shift. Falls
+  back to fixed hours (06:00 / 16:00) with no forecast.
+- Rebalance uses hysteresis: start threshold (default **10%**) vs stop (3%); PV
+  First modes for both legs; requires grid connection on both plants; suppressed
+  while GRID_CHARGE/OUTAGE_PREP active
+- Solar curtail sets export limit to 0 kW when Amber feed-in price < threshold
 - Daily energy sensors use signed `grid_active_power` (net across both phases), NOT per-plant `grid_import_power`/`grid_export_power` which double-count during rebalancing
 - Battery sensors use `battery_power` from both plants (already in kW); Sigen sign convention is positive = charging, negative = discharging — coordinator negates so `net_battery_power` follows positive = discharging
 - **NEVER touch** `switch.sigen_plant_plant_power` or `switch.sigen_plant_2_plant_power` — these control whether plants output power at all
 
-### ForecastEngine (Phase 2+)
+### LoadLearner (learning.py)
 
-Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solcast for solar coverage and Amber forecasts for cheapest charge windows. Degrades gracefully if external services offline.
+Learns per-window daily consumption (morning peak 06–09, daytime 09–16, evening
+peak 16–22) as a trailing 14-day average, integrated from the combined load
+reading each cycle and persisted with a Store (`sentinel_learning_<entry_id>`).
+GRID_CHARGE targets self-tune from it; seeds (`DEFAULT_SEED_*_KWH`) reproduce the
+old fixed-target behaviour until a full day is learned. Exposed via read-only
+`sensor.…learned_{morning,daytime,evening}_load` and `…learning_days`.
 
 ### Services (Phase 5)
 
@@ -84,6 +110,28 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 
 ## Build Status
 
+### Self-Running Optimisation — Stages 1–4 (BUILT, NOT DEPLOYED — 2026-07-27)
+Branch `feature/self-running-optimisation`; design in `OPTIMISATION_PLAN.md`.
+Supersedes the SPIKE_EXPORT, MORNING_FLOOR, and solar-adaptive/two-phase
+GRID_CHARGE work in the phase logs below.
+- [x] **Stage 1** — write pacing (`_paced_service_call`); delete SPIKE_EXPORT +
+  MORNING_FLOOR (modes, switches, morning-floor SOC number + binary sensor).
+- [x] **Stage 2** — GRID_CHARGE deadline = detected next price-peak onset
+  (`_detect_peak_onset` / `_resolve_charge_phase`), replacing fixed 06:00/16:00.
+- [x] **Stage 3** — `LoadLearner`; GRID_CHARGE targets learned & seasonal; two
+  survivor SOC knobs (`grid_charge_min_reserve_soc` 20%, `grid_charge_max_soc`
+  90%); visibility sensors (learned loads, effective targets, next peak times).
+- [x] **Stage 4** — prune inert entities. Panel now: **switches** Grid Charging /
+  Rebalancing / Solar Curtail / Outage Prep; **numbers** Grid Charge Rate / Min
+  Reserve / Max SOC / Outage Target (+ Outage Date). Advanced knobs
+  (hysteresis, curtail price, rebalance thresholds/rate) disabled by default.
+- [x] Logic validated offline (peak detection, learning integration, seasonal
+  targets); all modules compile.
+- [ ] **Deploy & test:** Samba-copy `custom_components/sentinel/`, clear
+  `__pycache__`, restart HA. Removed old entities orphan (unavailable) until
+  deleted. Learner runs on seeds ~1–2 weeks before it fully self-tunes.
+
+---
 ### Phase 1 — Coordinator + Rebalancing (DEPLOYED 2026-04-22)
 - [x] Coordinator, priority engine, rebalancing, failsafe, self-consumption
 - [x] All entity files, 6-step config flow, deployed and tested
@@ -91,7 +139,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Grid connection check: rebalancing disabled when either plant is off-grid
 - [ ] Verify rebalance stop condition restores SELF_CONSUMPTION
 
-### Phase 2 — Morning Floor (IN PROGRESS)
+### Phase 2 — Morning Floor (REMOVED in Stage 1 — folded into GRID_CHARGE overnight)
 - [x] 6am SOC prediction (live load sensors with fallback to typical kWh)
 - [x] MORNING_FLOOR mode: charge both batteries via Grid First when predicted 6am SOC < floor
 - [x] Number entities: floor SOC (40%), charge rate (2 kW), typical overnight load (5 kWh)
@@ -117,7 +165,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] Hysteresis: 1% buffer on entry, stops at target; auto-discovers Amber site from config entries
 - [ ] Deploy & test: enable switch, monitor for GRID_CHARGE active/inactive/forced logs
 
-#### Solar-adaptive target (COMPLETE)
+#### Solar-adaptive target (SUPERSEDED by Stage 3 learned targets — entities removed in Stage 4)
 - [x] `switch.sentinel_grid_charge_adaptive_target` (default OFF): when on, GRID_CHARGE target SOC is derived from tomorrow's Solcast forecast instead of the fixed target
 - [x] Interpolation in `_compute_grid_charge_target()`: solar ≤ low threshold → high SOC target (winter, buy cheap overnight); solar ≥ high threshold → low SOC target (summer, let sun refill); linear between
 - [x] Number entities: solar low threshold (20 kWh), solar high threshold (45 kWh), target poor-solar (95%), target strong-solar (35%)
@@ -125,7 +173,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] `sensor.sentinel_grid_charge_target_soc` exposes the effective (computed) target for visibility/tuning
 - [ ] Deploy & test: enable adaptive switch, confirm target tracks Solcast tomorrow across a sunny vs cloudy day
 
-#### Two-phase charging (COMPLETE)
+#### Two-phase charging (SUPERSEDED by Stage 2 dynamic peak-onset deadlines)
 - [x] GRID_CHARGE splits into an **overnight phase** (22:00–06:00, target = overnight cap, deadline 06:00) and a **daytime top-up phase** (09:00–16:00, target = evening target, deadline = `grid_charge_deadline_hour`), chosen by which off-peak window `now` is in (`_async_evaluate_grid_charge`)
 - [x] Overnight's 06:00 deadline means `_select_cheapest_charge_window` only sees overnight intervals — the midday window can no longer steal the overnight charge (root cause of "sat in MORNING_FLOOR overnight, no cheap-window charging")
 - [x] Overnight cap kept below the evening target so daytime solar has headroom to fill the rest for free; daytime phase yields to SELF_CONSUMPTION outside selected cheap intervals so solar charges first, then grid tops up when cheap
@@ -134,7 +182,7 @@ Predicts 6am SOC using live load sensors (fallback: configured kWh). Checks Solc
 - [x] `sensor.sentinel_grid_charge_target_soc` is now phase-aware — shows the active phase's target (overnight cap overnight, evening target during the day)
 - [ ] Deploy & test: confirm overnight charges to the cap at cheapest night intervals, then daytime tops up to the evening target after solar
 
-#### Optimizations from July 2026 history analysis (PENDING DEPLOY)
+#### Optimizations from July 2026 history analysis (rolled into Stages 2–4)
 Diagnosed from `history-2.csv` (July 15–25, high-load site: 100–185 kWh/day load vs 49 kWh pack). Overnight cap was being *hit* but set too low (~50%) by gross-solar interpolation; daytime top-up thrashed (GRID_CHARGE↔REBALANCE↔SELF_CONSUMPTION flipping every 30–60 s) and never reached the evening target.
 - [x] **Contiguous charge block**: `_select_cheapest_charge_window` now picks the single cheapest *contiguous* run covering `required_hours` (was N scattered globally-cheapest 5-min slots) — kills the on/off toggling that let REBALANCE steal the gaps
 - [x] **Rebalance suppressed during charge**: `_check_rebalance_conditions` returns False when `_grid_charge_active`/`_outage_prep_active` so the two packs don't fight the charger
@@ -144,8 +192,8 @@ Diagnosed from `history-2.csv` (July 15–25, high-load site: 100–185 kWh/day 
 - [x] **FAILSAFE debounce**: `FAILSAFE_DEBOUNCE_POLLS` (2) — a single missed poll holds the current mode instead of dropping to Maximum Self Consumption; HA-switch-off still trips immediately
 - [ ] Deploy & test: confirm daytime top-up sustains one block & reaches evening target; overnight cap tracks surplus; rebalance/failsafe churn drops
 
-### Phase 4 — Price Spike Export
-- [ ] SPIKE_EXPORT mode with safety logic
+### Phase 4 — Price Spike Export (REMOVED in Stage 1 — insufficient pack headroom vs load)
+- ~~SPIKE_EXPORT mode with safety logic~~ (deleted)
 
 ### Phase 5 — Planned Outage Prep (COMPLETE)
 - [x] `date.sentinel_outage_date` entity: single planned outage date (ISO, persisted in options)
