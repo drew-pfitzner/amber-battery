@@ -40,9 +40,71 @@ async def async_setup_entry(
         SentinelDailyGridExportSensor(coordinator),
         SentinelDailyBatteryDischargeSensor(coordinator),
         SentinelDailyBatteryChargeSensor(coordinator),
+        SentinelDataSensor(
+            coordinator, "overnight_target_soc", "Overnight Target SOC",
+            "mdi:weather-night", PERCENTAGE,
+        ),
+        SentinelDataSensor(
+            coordinator, "evening_target_soc", "Evening Target SOC",
+            "mdi:weather-sunset", PERCENTAGE,
+        ),
+        SentinelDataSensor(
+            coordinator, "learned_morning_load", "Learned Morning Load",
+            "mdi:weather-sunset-up", UnitOfEnergy.KILO_WATT_HOUR,
+        ),
+        SentinelDataSensor(
+            coordinator, "learned_daytime_load", "Learned Daytime Load",
+            "mdi:white-balance-sunny", UnitOfEnergy.KILO_WATT_HOUR,
+        ),
+        SentinelDataSensor(
+            coordinator, "learned_evening_load", "Learned Evening Load",
+            "mdi:weather-sunset-down", UnitOfEnergy.KILO_WATT_HOUR,
+        ),
+        SentinelDataSensor(
+            coordinator, "learning_days", "Learning Days", "mdi:calendar-check", None,
+        ),
+        SentinelPeakTimeSensor(coordinator, "next_morning_peak", "Next Morning Peak"),
+        SentinelPeakTimeSensor(coordinator, "next_evening_peak", "Next Evening Peak"),
     ]
 
     async_add_entities(sensors)
+
+
+class SentinelDataSensor(CoordinatorEntity, SensorEntity):
+    """Generic read-only sensor surfacing a numeric key from coordinator data."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, key: str, name: str, icon: str, unit) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self):
+        return self.coordinator.data.get(self._key)
+
+
+class SentinelPeakTimeSensor(CoordinatorEntity, SensorEntity):
+    """Timestamp sensor for a detected next price-peak onset."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator, key: str, name: str) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_name = name
+        self._attr_icon = "mdi:transmission-tower"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.data.get(self._key)
 
 
 class SentinelActiveModeSensor(CoordinatorEntity, SensorEntity):

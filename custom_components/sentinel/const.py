@@ -95,6 +95,12 @@ OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = "grid_charge_overnight_target_low_soc
 # instead of spilling to the grid at a poor feed-in price.
 OPT_EXPECTED_DAYTIME_LOAD_KWH = "expected_daytime_load_kwh"
 
+# Options keys — grid charge SOC clamps (Stage 3). With learned targets these
+# two are the only SOC knobs left: the floor the battery is never charged below,
+# and the ceiling it is never charged above (protects solar headroom + longevity).
+OPT_GRID_CHARGE_MIN_RESERVE_SOC = "grid_charge_min_reserve_soc"
+OPT_GRID_CHARGE_MAX_SOC = "grid_charge_max_soc"
+
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
 OPT_OUTAGE_TARGET_SOC = "outage_target_soc"
@@ -121,6 +127,17 @@ DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = 85.0  # % — overnight cap ceil
 DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = 45.0   # % — overnight cap floor (large exportable solar surplus)
 DEFAULT_EXPECTED_DAYTIME_LOAD_KWH = 45.0    # kWh — site consumption during solar hours (surplus = forecast PV − this)
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
+
+# Grid charge SOC clamps (Stage 3)
+DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC = 20.0  # % — never charge target below this
+DEFAULT_GRID_CHARGE_MAX_SOC = 90.0          # % — never charge target above this
+
+# Seed loads (kWh) used until the learner has at least one full day of history.
+# Chosen to reproduce the previous fixed-target behaviour (~85% evening, ~40%
+# overnight floor on a 49 kWh pack) before learning takes over. Daytime load
+# seeds from the OPT_EXPECTED_DAYTIME_LOAD_KWH option.
+DEFAULT_SEED_MORNING_KWH = 20.0
+DEFAULT_SEED_EVENING_KWH = 40.0
 
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)
 OUTAGE_PREP_START_HOUR = 22                 # 10 PM on day before

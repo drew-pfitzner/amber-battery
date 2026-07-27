@@ -30,6 +30,8 @@ from .const import (
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
     OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+    OPT_GRID_CHARGE_MIN_RESERVE_SOC,
+    OPT_GRID_CHARGE_MAX_SOC,
     OPT_OUTAGE_TARGET_SOC,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
@@ -47,6 +49,8 @@ from .const import (
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
     DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+    DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
+    DEFAULT_GRID_CHARGE_MAX_SOC,
     DEFAULT_OUTAGE_TARGET_SOC,
 )
 
@@ -111,6 +115,26 @@ NUMBER_DESCRIPTIONS = [
         native_step=5.0,
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_GRID_CHARGE_TARGET_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_min_reserve_soc",
+        name="Grid Charge Min Reserve",
+        icon="mdi:battery-low",
+        native_min_value=5.0,
+        native_max_value=60.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_MIN_RESERVE_SOC,
+    ),
+    SentinelNumberDescription(
+        key="grid_charge_max_soc",
+        name="Grid Charge Max SOC",
+        icon="mdi:battery-high",
+        native_min_value=50.0,
+        native_max_value=100.0,
+        native_step=5.0,
+        native_unit_of_measurement=PERCENTAGE,
+        option_key=OPT_GRID_CHARGE_MAX_SOC,
     ),
     SentinelNumberDescription(
         key="grid_charge_deadline_hour",
@@ -288,6 +312,8 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
         OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
         OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC: DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
+        OPT_GRID_CHARGE_MIN_RESERVE_SOC: DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
+        OPT_GRID_CHARGE_MAX_SOC: DEFAULT_GRID_CHARGE_MAX_SOC,
         OPT_OUTAGE_TARGET_SOC: DEFAULT_OUTAGE_TARGET_SOC,
     }
 
