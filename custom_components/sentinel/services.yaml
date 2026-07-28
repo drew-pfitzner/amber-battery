@@ -1,0 +1,8 @@
+backfill_learning:
+  name: Backfill load learning
+  description: >-
+    Seed the load learner from Home Assistant recorder history so GRID_CHARGE
+    targets self-tune immediately instead of waiting ~14 days of live
+    accumulation. Integrates the recorded Sigen consumed-power history into the
+    morning/daytime/evening windows and overwrites the trailing history with the
+    complete days found. Safe to run repeatedly.

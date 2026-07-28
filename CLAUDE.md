@@ -74,6 +74,12 @@ mode whose trigger is true wins and is the only one to write controls that cycle
   evening-peak load as SOC; overnight floor = learned morning-peak load; overnight
   cap = `max_charge` − exportable solar surplus (Solcast tomorrow − learned
   daytime load). Clamped to `[min_reserve, max_charge]`. Seeds until 1 day learned.
+  **Learned load sits on top of the ESS backup reserve:** `_compute_grid_charge_target`
+  and the overnight floor add `_backup_reserve_soc()` (mean of the two
+  `ess_backup_state_of_charge` numbers, currently 10%) to the kWh-derived SOC —
+  the pack won't discharge below the reserve, so without the offset the target
+  floored out mid-peak leaving ~reserve% of the load bought at peak (fixed
+  2026-07-28). E.g. evening 32 kWh → 65% + 10% = 75% target, not 65%.
 - **GRID_CHARGE deadline is the price jump, detected:** `_detect_peak_onset`
   finds the start of the next sustained peak run (price ≥ baseline×`PEAK_DETECT_FACTOR`
   or Amber high/spike) within a morning/evening band; the charge window closes
@@ -92,9 +98,19 @@ mode whose trigger is true wins and is the only one to write controls that cycle
 Learns per-window daily consumption (morning peak 06–09, daytime 09–16, evening
 peak 16–22) as a trailing 14-day average, integrated from the combined load
 reading each cycle and persisted with a Store (`sentinel_learning_<entry_id>`).
-GRID_CHARGE targets self-tune from it; seeds (`DEFAULT_SEED_*_KWH`) reproduce the
-old fixed-target behaviour until a full day is learned. Exposed via read-only
-`sensor.…learned_{morning,daytime,evening}_load` and `…learning_days`.
+GRID_CHARGE targets self-tune from it; seeds (`DEFAULT_SEED_*_KWH`, 20/45/40 kWh)
+reproduce the old fixed-target behaviour until a full day is learned. Exposed via
+read-only `sensor.…learned_{morning,daytime,evening}_load` and `…learning_days`.
+
+- **Rollover records only observed days:** a day is appended to history only if
+  `_day_had_data` (real integration happened that day). Stops a stale store from
+  stamping a phantom ~0 kWh day on the first post-deploy cycle — which would
+  override the seeds and read `0.0` with `learning_days=1` (seen 2026-07-28).
+- **Backfill service** `sentinel.backfill_learning` (`async_backfill`): integrates
+  the last 14 days of recorder history for the two `consumed_power` sensors into
+  the windows and overwrites the trailing history, so learning is useful
+  immediately instead of after a fortnight. Auto-scales W→kW from the sensor unit;
+  caps per-sample gaps at `MAX_GAP_SECONDS`. Run once after deploy.
 
 ### Services (Phase 5)
 

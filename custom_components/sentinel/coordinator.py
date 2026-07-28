@@ -598,9 +598,30 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
         return (kwh / capacity_kwh) * 100 if capacity_kwh else 0.0
 
+    def _backup_reserve_soc(self) -> float:
+        """The Sigen ESS backup-reserve SOC below which the packs won't discharge.
+
+        Energy sitting below this floor is not deliverable to the house, so a
+        kWh-derived charge target must be lifted by this much or the pack floors
+        out mid-peak with the load only partly covered. Uses the mean of the two
+        packs' configured backup SOC (they share one meter); 0 if unreadable.
+        """
+        config = self.config_entry.data
+        values = [
+            v for v in (
+                self._get_state_float(config[CONF_BACKUP_SOC_1]),
+                self._get_state_float(config[CONF_BACKUP_SOC_2]),
+            ) if v is not None
+        ]
+        return sum(values) / len(values) if values else 0.0
+
     def _compute_grid_charge_target(self) -> float:
         """Evening (daytime-phase) target SOC — enough to cover the *learned*
         evening-peak load, clamped to [min_reserve, max_charge].
+
+        The learned load is deliverable energy, so it sits *on top of* the ESS
+        backup reserve (the pack won't discharge below it); without that offset
+        the target floors out mid-peak with ~reserve% of the load uncovered.
 
         Seasonal for free: the trailing average tracks dark winter evenings up
         (bigger load → higher target) and lighter summer evenings down.
@@ -608,11 +629,13 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         min_reserve = self._opts[OPT_GRID_CHARGE_MIN_RESERVE_SOC]
         max_charge = self._opts[OPT_GRID_CHARGE_MAX_SOC]
         evening_kwh = self._learner.evening_kwh(DEFAULT_SEED_EVENING_KWH)
-        target = self._kwh_to_soc(evening_kwh)
+        reserve = self._backup_reserve_soc()
+        target = reserve + self._kwh_to_soc(evening_kwh)
         clamped = round(max(min_reserve, min(max_charge, target)), 1)
         _LOGGER.debug(
-            "Evening target %.1f%% (learned evening load %.1f kWh, %d days)",
-            clamped, evening_kwh, self._learner.days_learned,
+            "Evening target %.1f%% (learned evening load %.1f kWh + reserve "
+            "%.1f%%, %d days)",
+            clamped, evening_kwh, reserve, self._learner.days_learned,
         )
         return clamped
 
@@ -632,7 +655,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         morning_kwh = self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH)
         daytime_kwh = self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH)
-        floor = max(min_reserve, min(ceiling, self._kwh_to_soc(morning_kwh)))
+        reserve = self._backup_reserve_soc()
+        floor = max(
+            min_reserve, min(ceiling, reserve + self._kwh_to_soc(morning_kwh)),
+        )
 
         solar_entity = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
         solar_kwh = self._get_state_float(solar_entity) if solar_entity else None
@@ -1046,6 +1072,19 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if load_2 is not None:
             return load_2
         return None
+
+    async def async_backfill_learning(self) -> int:
+        """Seed the load learner from recorder history and refresh.
+
+        Returns the number of complete days written. Exposed via the
+        ``sentinel.backfill_learning`` service so learning can be expedited
+        instead of waiting for a fortnight of live accumulation.
+        """
+        days = await self._learner.async_backfill(
+            self.hass, [LOAD_POWER_1, LOAD_POWER_2], dt_util.now(),
+        )
+        await self.async_request_refresh()
+        return days
 
     async def _apply_mode(self, mode: str) -> None:
         """Apply the specified mode."""

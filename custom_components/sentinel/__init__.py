@@ -1,11 +1,17 @@
 """Sentinel Energy Manager custom integration."""
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import DOMAIN
 from .coordinator import SentinelCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+
+SERVICE_BACKFILL_LEARNING = "backfill_learning"
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
@@ -36,7 +42,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register options listener
     entry.async_on_unload(entry.add_update_listener(async_update_listener))
 
+    _async_register_services(hass)
+
     return True
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register domain-level services once."""
+    if hass.services.has_service(DOMAIN, SERVICE_BACKFILL_LEARNING):
+        return
+
+    async def _handle_backfill_learning(call: ServiceCall) -> None:
+        """Seed every Sentinel coordinator's learner from recorder history."""
+        total = 0
+        for data in hass.data.get(DOMAIN, {}).values():
+            coordinator = data.get("coordinator")
+            if coordinator is not None:
+                total += await coordinator.async_backfill_learning()
+        _LOGGER.info("backfill_learning service seeded %d day(s)", total)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_BACKFILL_LEARNING, _handle_backfill_learning,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

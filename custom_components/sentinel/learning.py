@@ -15,11 +15,12 @@ and persisted with a Store so it survives restarts.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
@@ -68,6 +69,11 @@ class LoadLearner:
         self._current_day: str | None = None
         self._last_ts: datetime | None = None
         self._last_save_ts: datetime | None = None
+        # Whether the current day has integrated any real energy yet. Guards the
+        # rollover so a day we never actually observed (stale-store phantom day,
+        # or a deploy at/near midnight) is not stamped into history as a
+        # misleading ~0 kWh "learned day" that would override the seeds.
+        self._day_had_data: bool = False
 
     async def async_load(self) -> None:
         """Load persisted state once. Idempotent — safe to call every cycle."""
@@ -112,12 +118,27 @@ class LoadLearner:
             self._current_day = today
 
         if today != self._current_day:
-            for key in self._history:
-                self._history[key].append(round(self._partial[key], 3))
-                self._history[key] = self._history[key][-MAX_DAYS:]
+            # Only record a day we actually observed. A phantom day (stale store
+            # rolled over on the first post-deploy cycle, or a deploy right at
+            # midnight) would otherwise append a ~0 kWh entry that silently
+            # overrides the seed fallback in _avg().
+            if self._day_had_data:
+                for key in self._history:
+                    self._history[key].append(round(self._partial[key], 3))
+                    self._history[key] = self._history[key][-MAX_DAYS:]
+                _LOGGER.debug(
+                    "LoadLearner rollover %s -> %s (recorded)",
+                    self._current_day, today,
+                )
+            else:
+                _LOGGER.debug(
+                    "LoadLearner rollover %s -> %s (skipped, no data)",
+                    self._current_day, today,
+                )
+            for key in self._partial:
                 self._partial[key] = 0.0
-            _LOGGER.debug("LoadLearner rollover %s -> %s", self._current_day, today)
             self._current_day = today
+            self._day_had_data = False
             self._last_ts = None  # don't integrate across the rollover boundary
             await self._async_save()
             self._last_save_ts = now
@@ -128,6 +149,7 @@ class LoadLearner:
                 band = _band_of(now.hour)
                 if band is not None:
                     self._partial[band] += load_kw * (dt_seconds / 3600.0)
+                    self._day_had_data = True
         self._last_ts = now
 
         if (
@@ -136,6 +158,105 @@ class LoadLearner:
         ):
             await self._async_save()
             self._last_save_ts = now
+
+    async def async_backfill(
+        self,
+        hass: HomeAssistant,
+        load_entities: list[str],
+        now: datetime,
+    ) -> int:
+        """Seed history from recorder so the learner is useful immediately.
+
+        Integrates the last MAX_DAYS of recorded load power for the given
+        entities into per-day / per-window kWh, then overwrites the trailing
+        history with the complete days found (today is partial, so excluded).
+        Returns the number of complete days written. This lets the operator
+        expedite learning instead of waiting a fortnight for it to accrue.
+        """
+        # Imported lazily: recorder is an optional core component and we only
+        # need it for this one-shot operation.
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.history import (
+            state_changes_during_period,
+        )
+
+        await self.async_load()
+
+        start = dt_util.as_utc(now) - timedelta(days=MAX_DAYS + 1)
+        end = dt_util.as_utc(now)
+
+        # buckets[date_iso][band] = kwh, summed across all load entities.
+        buckets: dict[str, dict[str, float]] = {}
+
+        def _band_energy(states: list, scale: float) -> None:
+            prev_t: datetime | None = None
+            prev_v: float | None = None
+            for st in states:
+                try:
+                    value = float(st.state) * scale
+                except (ValueError, TypeError):
+                    value = None
+                ts = st.last_changed
+                if (
+                    prev_t is not None
+                    and prev_v is not None
+                    and prev_v >= 0
+                ):
+                    dt_seconds = (ts - prev_t).total_seconds()
+                    if 0 < dt_seconds <= MAX_GAP_SECONDS:
+                        # The prior value was held over [prev_t, ts); attribute
+                        # its energy to that interval's local day and window.
+                        local = dt_util.as_local(prev_t)
+                        band = _band_of(local.hour)
+                        if band is not None:
+                            day = local.date().isoformat()
+                            day_bucket = buckets.setdefault(
+                                day, {"morning": 0.0, "daytime": 0.0, "evening": 0.0},
+                            )
+                            day_bucket[band] += prev_v * (dt_seconds / 3600.0)
+                prev_t, prev_v = ts, value
+
+        recorder = get_instance(hass)
+        for entity_id in load_entities:
+            # Unit sanity: live code treats consumed_power as kW. If the sensor
+            # reports W, scale so integrated energy stays in kWh.
+            scale = 1.0
+            cur = hass.states.get(entity_id)
+            if cur is not None and cur.attributes.get("unit_of_measurement") == "W":
+                scale = 0.001
+            history = await recorder.async_add_executor_job(
+                state_changes_during_period, hass, start, end, entity_id,
+            )
+            _band_energy(history.get(entity_id, []), scale)
+
+        today = now.date().isoformat()
+        complete_days = sorted(d for d in buckets if d != today)
+        complete_days = complete_days[-MAX_DAYS:]
+        if not complete_days:
+            _LOGGER.warning(
+                "LoadLearner backfill found no complete days of recorder "
+                "history for %s", load_entities,
+            )
+            return 0
+
+        for key in self._history:
+            self._history[key] = [
+                round(buckets[d][key], 3) for d in complete_days
+            ]
+        # Keep accumulating today's partial live rather than double-counting it.
+        self._current_day = today
+        self._day_had_data = False
+        self._last_ts = None
+        for key in self._partial:
+            self._partial[key] = 0.0
+        await self._async_save()
+        _LOGGER.info(
+            "LoadLearner backfill wrote %d days (morning=%.1f daytime=%.1f "
+            "evening=%.1f kWh avg)",
+            len(complete_days),
+            self.morning_kwh(0.0), self.daytime_kwh(0.0), self.evening_kwh(0.0),
+        )
+        return len(complete_days)
 
     def _avg(self, key: str, seed: float) -> float:
         """Trailing average for a window, or the seed until any full day exists."""
