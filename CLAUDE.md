@@ -72,8 +72,11 @@ mode whose trigger is true wins and is the only one to write controls that cycle
   integrates combined load each cycle into morning/daytime/evening windows and
   keeps a trailing 14-day average (persisted via Store). Evening target = learned
   evening-peak load as SOC; overnight floor = learned morning-peak load; overnight
-  cap = `max_charge` − exportable solar surplus (Solcast tomorrow − learned
-  daytime load). Clamped to `[min_reserve, max_charge]`. Seeds until 1 day learned.
+  cap = `max_charge` − exportable solar surplus (coming-day Solcast − learned
+  daytime load). The "coming day" is the one that dawns *after* the overnight
+  charge (`_overnight_solar_kwh`): tomorrow's Solcast before midnight, today's
+  from midnight onward (the window straddles midnight), keyed off the morning-peak
+  onset date. Clamped to `[min_reserve, max_charge]`. Seeds until 1 day learned.
   **Learned load sits on top of the ESS backup reserve:** `_compute_grid_charge_target`
   and the overnight floor add `_backup_reserve_soc()` (mean of the two
   `ess_backup_state_of_charge` numbers, currently 10%) to the kWh-derived SOC —

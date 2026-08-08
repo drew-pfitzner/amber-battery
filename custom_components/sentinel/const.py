@@ -127,6 +127,13 @@ PEAK_DETECT_BASELINE_PCTL = 0.30             # baseline = this percentile of pri
 MORNING_PEAK_BAND = (4, 11)                  # search 04:00–11:00 for morning onset
 EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening onset
 
+# Floor for the *net* charge power used to size required_hours. The battery fills
+# at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid
+# import, and PV First diverts PV into the pack), so a raw charge_rate under-books
+# the window and the pack lands just shy of target. Clamp to this floor so the
+# estimate stays finite when load transiently exceeds the rate.
+GRID_CHARGE_MIN_EFFECTIVE_KW = 0.5
+
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"
 LOAD_POWER_2 = "sensor.sigen_plant_2_consumed_power"

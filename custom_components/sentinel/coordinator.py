@@ -49,6 +49,7 @@ from .const import (
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
     GRID_CHARGE_MORNING_DEADLINE_HOUR,
+    GRID_CHARGE_MIN_EFFECTIVE_KW,
     GRID_CHARGE_DAYTIME_START_HOUR,
     GRID_CHARGE_OVERNIGHT_START_HOUR,
     FALLBACK_EVENING_PEAK_HOUR,
@@ -86,6 +87,7 @@ from .const import (
     DEFAULT_SEED_MORNING_KWH,
     DEFAULT_SEED_EVENING_KWH,
     DEFAULT_SEED_DAYTIME_KWH,
+    CONF_SOLCAST_TODAY,
     CONF_SOLCAST_TOMORROW,
     FAILSAFE_DEBOUNCE_POLLS,
     OUTAGE_PREP_START_HOUR,
@@ -365,7 +367,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 ),
                 "learning_days": self._learner.days_learned,
                 "evening_target_soc": self._compute_grid_charge_target(),
-                "overnight_target_soc": self._compute_overnight_target(),
+                "overnight_target_soc": self._compute_overnight_target(
+                    self._next_morning_peak,
+                ),
             }
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
@@ -639,16 +643,75 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         )
         return clamped
 
-    def _compute_overnight_target(self) -> float:
+    def _solcast_today_entity(self) -> str | None:
+        """Entity id for *today's* Solcast forecast.
+
+        Prefers the configured value. If the site only wired up the "tomorrow"
+        sensor (today was an optional field and long went unused), derive today's
+        from it — the Solcast integration names the pair identically bar the
+        `_today` / `_tomorrow` suffix — so the post-midnight overnight path reads
+        the right day without needing a reconfigure.
+        """
+        data = self.config_entry.data
+        today = data.get(CONF_SOLCAST_TODAY)
+        if today:
+            return today
+        tomorrow = data.get(CONF_SOLCAST_TOMORROW)
+        if tomorrow and tomorrow.endswith("_tomorrow"):
+            return tomorrow[: -len("_tomorrow")] + "_today"
+        return None
+
+    def _overnight_solar_kwh(
+        self, morning_onset: datetime | None,
+    ) -> tuple[float | None, str]:
+        """Forecast generation (kWh) for the solar day that will refill the pack
+        *after* this overnight charge, plus a short label of which day was read.
+
+        The overnight window straddles midnight (22:00 → morning peak), so the
+        day that dawns after the charge is *tomorrow* before midnight but
+        *today* once past it. We decide from the date of the morning-peak onset
+        this cap charges toward: same date as now → the peak is later today →
+        today's Solcast; otherwise → tomorrow's. Falls back to the other day's
+        entity if the preferred one is unavailable, and to None only when neither
+        can be read.
+        """
+        now = dt_util.now()
+        onset = morning_onset or self._next_morning_peak
+        if onset is not None:
+            coming_day_is_today = onset.date() == now.date()
+        else:
+            coming_day_is_today = now.hour < GRID_CHARGE_MORNING_DEADLINE_HOUR
+
+        today_ent = self._solcast_today_entity()
+        tomorrow_ent = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
+        if coming_day_is_today:
+            primary, secondary, label = today_ent, tomorrow_ent, "today"
+        else:
+            primary, secondary, label = tomorrow_ent, today_ent, "tomorrow"
+
+        value = self._get_state_float(primary) if primary else None
+        if value is not None:
+            return value, label
+        # Preferred day unavailable — fall back to the other day's forecast.
+        value = self._get_state_float(secondary) if secondary else None
+        return value, (label + "(fallback)" if value is not None else "n/a")
+
+    def _compute_overnight_target(
+        self, morning_onset: datetime | None = None,
+    ) -> float:
         """Overnight (morning-phase) cap SOC.
 
         Floor = the *learned* morning-peak load as SOC — this guarantees the
         morning peak is covered from battery. Ceiling = max_charge. From the
-        ceiling we subtract the exportable solar surplus (tomorrow's Solcast minus
-        the learned daytime load) so a sunny/low-load day leaves headroom for
-        solar to fill the pack for free, while a winter/high-load day (≈ zero
-        surplus) charges to the ceiling overnight. No forecast → charge to the
-        ceiling to be safe.
+        ceiling we subtract the exportable solar surplus (the *coming* day's
+        Solcast minus the learned daytime load) so a sunny/low-load day leaves
+        headroom for solar to fill the pack for free, while a winter/high-load
+        day (≈ zero surplus) charges to the ceiling overnight. No forecast →
+        charge to the ceiling to be safe.
+
+        The coming solar day is resolved by `_overnight_solar_kwh` from the
+        morning-peak onset, so the post-midnight part of the window reads
+        today's forecast rather than tomorrow's.
         """
         min_reserve = self._opts[OPT_GRID_CHARGE_MIN_RESERVE_SOC]
         ceiling = self._opts[OPT_GRID_CHARGE_MAX_SOC]
@@ -660,8 +723,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             min_reserve, min(ceiling, reserve + self._kwh_to_soc(morning_kwh)),
         )
 
-        solar_entity = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
-        solar_kwh = self._get_state_float(solar_entity) if solar_entity else None
+        solar_kwh, solar_day = self._overnight_solar_kwh(morning_onset)
         if solar_kwh is None:
             cap = ceiling
         else:
@@ -671,8 +733,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         clamped = round(max(floor, min(ceiling, cap)), 1)
         _LOGGER.debug(
             "Overnight target %.1f%% (floor %.1f%% from morning %.1f kWh; "
-            "ceiling %.0f%%; solar %s − daytime %.1f kWh)",
-            clamped, floor, morning_kwh, ceiling,
+            "ceiling %.0f%%; %s solar %s − daytime %.1f kWh)",
+            clamped, floor, morning_kwh, ceiling, solar_day,
             f"{solar_kwh:.1f}" if solar_kwh is not None else "n/a", daytime_kwh,
         )
         return clamped
@@ -818,7 +880,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         phase, deadline = self._resolve_charge_phase(now, morning_onset, evening_onset)
         if phase == "overnight":
-            target_soc = self._compute_overnight_target()
+            target_soc = self._compute_overnight_target(morning_onset)
         elif phase == "daytime":
             target_soc = self._compute_grid_charge_target()
         else:
@@ -845,7 +907,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 return False
 
         soc_deficit = max(0.0, target_soc - mean_soc)
-        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        deficit_kwh = (soc_deficit / 100.0) * capacity_kwh
+        required_hours = deficit_kwh / self._effective_charge_rate_kw(charge_rate_kw)
         if required_hours <= 0:
             return False
 
@@ -989,7 +1052,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
         soc_deficit = max(0.0, target_soc - mean_soc)
-        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        deficit_kwh = (soc_deficit / 100.0) * capacity_kwh
+        required_hours = deficit_kwh / self._effective_charge_rate_kw(charge_rate_kw)
         if required_hours <= 0:
             return False
 
@@ -1072,6 +1136,23 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         if load_2 is not None:
             return load_2
         return None
+
+    def _effective_charge_rate_kw(self, charge_rate_kw: float) -> float:
+        """Net power actually reaching the battery when grid-charging.
+
+        The charge is applied by setting `grid_import_limitation = charge_rate`,
+        but on Sigen that caps *total* grid import (household load + battery), and
+        Command Charging (PV First) also diverts PV into the pack — so the battery
+        fills at roughly `charge_rate + PV − load`, not the full `charge_rate`.
+        Sizing `required_hours` off the raw rate under-books the cheap window, so
+        the pack lands just shy of target and then top-ups in the pricier pre-peak
+        tail. Uses live PV/load (re-evaluated each cycle, so it self-corrects) and
+        clamps to a small floor so the estimate stays finite when load transiently
+        exceeds the rate.
+        """
+        pv = self._get_combined_pv_kw() or 0.0
+        load = self._get_combined_load_kw() or 0.0
+        return max(GRID_CHARGE_MIN_EFFECTIVE_KW, charge_rate_kw + pv - load)
 
     async def async_backfill_learning(self) -> int:
         """Seed the load learner from recorder history and refresh.

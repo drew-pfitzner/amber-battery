@@ -136,10 +136,16 @@ behaviour. Capacity = 2 × `battery_capacity_kwh` (49 kWh).
 - **Overnight cap** (`_compute_overnight_target`)
   `floor = learned_morning_load as SOC` (guarantees the morning peak is covered);
   `ceiling = max_charge`;
-  `cap = ceiling − (Solcast_tomorrow − learned_daytime_load) as SOC`, clamped
+  `cap = ceiling − (coming_day_Solcast − learned_daytime_load) as SOC`, clamped
   `[floor, ceiling]`. High-load / winter → ~0 surplus → charge to the ceiling;
   sunny / low-load → cap pulled down so daytime solar fills the pack for free.
   No Solcast → charge to the ceiling to be safe.
+  **Coming day = the day that dawns *after* this charge** (`_overnight_solar_kwh`):
+  the overnight window straddles midnight (22:00 → morning peak), so before
+  midnight the refill day is *tomorrow*'s Solcast, but from midnight onward the
+  morning peak is later *today*, so it reads *today*'s Solcast. Decided from the
+  date of the morning-peak onset the cap is charging toward; falls back to the
+  other Solcast entity if the preferred one isn't wired up.
 
 Only two SOC knobs remain: `grid_charge_min_reserve_soc` (20%) and
 `grid_charge_max_soc` (90%). Effective targets are shown by
@@ -149,7 +155,14 @@ Only two SOC knobs remain: `grid_charge_min_reserve_soc` (20%) and
 
 1. Hysteresis: stop at target; don't restart until `grid_charge_hysteresis_soc`
    (3%) below it.
-2. `required_hours = deficit × capacity / grid_charge_rate_kw`.
+2. `required_hours = deficit_kWh / effective_charge_rate`, where
+   `effective_charge_rate = grid_charge_rate_kw + PV − load` (floored at
+   `GRID_CHARGE_MIN_EFFECTIVE_KW`, 0.5 kW). The Sigen `grid_import_limitation`
+   caps *total* grid import (load + battery) and PV First diverts PV into the
+   pack, so the battery fills at rate + PV − load, not the raw rate — sizing off
+   the raw rate under-books the window and lands the pack just shy of target,
+   then top-ups in the pricier pre-peak tail (`_effective_charge_rate_kw`, live
+   PV/load, re-evaluated each cycle so it self-corrects).
 3. **Forced** if `hours_remaining_to_peak < required × 1.5` — charge immediately
    (needs no forecast).
 4. Otherwise pick the single cheapest **contiguous** block of forecast intervals
