@@ -83,6 +83,18 @@ mode whose trigger is true wins and is the only one to write controls that cycle
   the pack won't discharge below the reserve, so without the offset the target
   floored out mid-peak leaving ~reserve% of the load bought at peak (fixed
   2026-07-28). E.g. evening 32 kWh → 65% + 10% = 75% target, not 65%.
+- **GRID_CHARGE gives itself a buffer, and holds the target once reached**
+  (added 2026-08-09 after the pack met the morning peak at 86.5% vs a 90%
+  target). Three parts: (1) `required_hours` is booked with a
+  `GRID_CHARGE_TIME_MARGIN` (1.3) of slack; (2) the charge rate used to size it
+  is the *lower* of modelled (`rate + PV − load`) and **measured**
+  (`_observed_charge_kw`, an EMA of ΔSOC/Δt while charging) — the plant modelled
+  16 kW but actually took 10.8 kW, so the window was booked at half the time it
+  needed; (3) reaching target **latches a hold to the deadline** instead of
+  ending the charge, topping the pack back up whenever it sags 1% below target,
+  so it enters the peak at target rather than coasting down on house load. The
+  forced-charge path latches too — without it the trigger ratio flickered as SOC
+  climbed and chattered the mode ~40 times overnight. See `CONTROL_LOGIC.md §4d–4e`.
 - **GRID_CHARGE deadline is the price jump, detected:** `_detect_peak_onset`
   finds the start of the next sustained peak run (price ≥ baseline×`PEAK_DETECT_FACTOR`
   or Amber high/spike) within a morning/evening band; the charge window closes
@@ -121,7 +133,12 @@ read-only `sensor.…learned_{morning,daytime,evening}_load` and `…learning_da
 
 ### Data Sources
 
-- **Amber forecasts:** via action `amberelectric.get_forecasts` (config_entry="Hill End", channel_type="general"). Returns 5-min intervals with `per_kwh` (dollars), `spot_per_kwh`, `spike_status`, `descriptor`, `start_time` (UTC), `nem_date` (AEST). Called with `return_response=True`.
+- **Amber forecasts:** via action `amberelectric.get_forecasts`
+  (**`config_entry_id`** = the Amber config **entry_id**, e.g.
+  `01KPPRS5QNSK0G17RXTHKMVBMW` for "Hill End"; `channel_type="general"`). The
+  field was previously `config_entry` taking the site *title* — passing the old
+  key fails schema validation and silently kills all price-aware charging
+  (`ISSUES.md #5`). Sentinel tries the new key and falls back to the old one. Returns 5-min intervals with `per_kwh` (dollars), `spot_per_kwh`, `spike_status`, `descriptor`, `start_time` (UTC), `nem_date` (AEST). Called with `return_response=True`.
 - **Amber sensors:** `sensor.<site>_general_price`, `sensor.<site>_feed_in_price`, `binary_sensor.<site>_price_spike`
 - **Solcast:** `sensor.solcast_pv_solar_forecast_today`, `sensor.solcast_pv_solar_forecast_tomorrow`
 - **Sigen load:** `sensor.sigen_plant_consumed_power`, `sensor.sigen_plant_2_consumed_power` (hardcoded, not configurable)
@@ -149,6 +166,30 @@ GRID_CHARGE work in the phase logs below.
 - [ ] **Deploy & test:** Samba-copy `custom_components/sentinel/`, clear
   `__pycache__`, restart HA. Removed old entities orphan (unavailable) until
   deleted. Learner runs on seeds ~1–2 weeks before it fully self-tunes.
+
+### Charge-completion fixes — 2026-08-09 (BUILT, NOT DEPLOYED)
+Diagnosed from the 2026-08-08/09 overnight: pack reached **86.5%** against a 90%
+target at the 06:00 peak, all charging crammed into one block from 02:45, mode
+chattering ~40 times.
+- [x] **Amber forecast fetch repaired** — `config_entry_id` (entry_id), legacy key
+  as fallback, throttled warning. This was the root cause: forecasts had been
+  failing every poll since 2026-08-08 20:18, leaving only the forced path
+  (`ISSUES.md #5`). Verified live: returns 50 intervals.
+- [x] **Measured charge rate** (`_record_charge_rate_sample`, `_observed_charge_kw`)
+  — EMA of ΔSOC/Δt while charging; `required_hours` sizes off `min(modelled,
+  measured)`. Modelled 16 kW vs 10.8 kW actual.
+- [x] **Time margin** `GRID_CHARGE_TIME_MARGIN` (1.3) on `required_hours`
+  (GRID_CHARGE and OUTAGE_PREP).
+- [x] **Top-up hold** to the deadline once target is met
+  (`GRID_CHARGE_TOPUP_BAND_SOC` 1%), and a **forced-charge latch** to stop the
+  chatter.
+- [x] Replayed offline against the 08-09 overnight: SOC at deadline **89.2%** vs
+  86.5% as-run; **still 89.6% when load doubles to 6 kW mid-charge**; mode changes
+  40 → 6–16; the rate EMA converges on the true achievable kW.
+- [ ] **Deploy & test:** confirm the error log is free of `Failed to fetch Amber
+  forecasts`, that GRID_CHARGE now picks a cheap block well before the peak
+  rather than forcing at the last minute, and that SOC sits *at* target when the
+  peak starts.
 
 ---
 ### Phase 1 — Coordinator + Rebalancing (DEPLOYED 2026-04-22)

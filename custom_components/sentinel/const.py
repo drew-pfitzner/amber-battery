@@ -1,5 +1,7 @@
 """Constants for Sentinel Energy Manager."""
 
+from datetime import timedelta
+
 DOMAIN = "sentinel"
 SCAN_INTERVAL_SECONDS = 30
 
@@ -133,6 +135,44 @@ EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening 
 # the window and the pack lands just shy of target. Clamp to this floor so the
 # estimate stays finite when load transiently exceeds the rate.
 GRID_CHARGE_MIN_EFFECTIVE_KW = 0.5
+
+# Observed charge rate. The modelled rate (charge_rate + PV − load) is an upper
+# bound the plant often can't hit — inverter/BMS taper, per-plant limits, a
+# charge_rate set above what the Sigens will actually draw. Sentinel therefore
+# *measures* the net kW reaching the pack while it charges (ΔSOC over Δt) and
+# keeps an EMA of it, using whichever of modelled/observed is lower to size
+# required_hours. Under-estimating the rate only starts the charge earlier;
+# over-estimating runs the clock out short of target (seen 2026-08-09).
+GRID_CHARGE_RATE_EMA_ALPHA = 0.25          # weight of each new observation
+GRID_CHARGE_RATE_MIN_SAMPLE_S = 60         # ignore samples shorter than this
+GRID_CHARGE_RATE_MAX_SAMPLE_S = 600        # ignore stale gaps (restart, dropout)
+GRID_CHARGE_RATE_MIN_SAMPLES = 3           # trust the EMA only after this many
+
+# Safety margin on the charge duration. required_hours is booked this much longer
+# than the arithmetic minimum so a mid-charge load increase, a slower-than-modelled
+# ramp, or a late start doesn't land the pack short at the peak.
+GRID_CHARGE_TIME_MARGIN = 1.3
+
+# Forced charge: fires when the time left to the peak drops below
+# required_hours × this. Once forced, the charge LATCHES to the deadline — the
+# ratio recomputes every cycle as SOC climbs, so without the latch the mode
+# chattered on/off every few minutes (40+ transitions overnight, 2026-08-09).
+GRID_CHARGE_FORCE_FACTOR = 1.5
+
+# Top-up hold. Reaching target *before* the deadline used to end the charge, and
+# household load then coasted the pack down so it met the peak several % below
+# target. Instead GRID_CHARGE stays latched until the deadline passes and tops
+# the pack back up whenever it sags this far below target.
+GRID_CHARGE_TOPUP_BAND_SOC = 1.0
+
+# How far a re-detected peak onset may move before its latches are treated as
+# belonging to a *different* peak. Onsets jitter by an interval or two as the
+# Amber forecast refreshes; a whole hour of movement is a genuinely new peak.
+GRID_CHARGE_LATCH_TOLERANCE = timedelta(hours=1)
+
+# Throttle for repeated Amber forecast failures (seconds between warnings) — a
+# broken service signature otherwise logs every 30 s poll (1231 lines/10 h).
+AMBER_FORECAST_WARN_INTERVAL_S = 900
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"

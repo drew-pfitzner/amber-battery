@@ -153,22 +153,50 @@ Only two SOC knobs remain: `grid_charge_min_reserve_soc` (20%) and
 
 ### 4d. When it actually charges
 
-1. Hysteresis: stop at target; don't restart until `grid_charge_hysteresis_soc`
-   (3%) below it.
-2. `required_hours = deficit_kWh / effective_charge_rate`, where
-   `effective_charge_rate = grid_charge_rate_kw + PV − load` (floored at
-   `GRID_CHARGE_MIN_EFFECTIVE_KW`, 0.5 kW). The Sigen `grid_import_limitation`
-   caps *total* grid import (load + battery) and PV First diverts PV into the
-   pack, so the battery fills at rate + PV − load, not the raw rate — sizing off
-   the raw rate under-books the window and lands the pack just shy of target,
-   then top-ups in the pricier pre-peak tail (`_effective_charge_rate_kw`, live
-   PV/load, re-evaluated each cycle so it self-corrects).
-3. **Forced** if `hours_remaining_to_peak < required × 1.5` — charge immediately
-   (needs no forecast).
-4. Otherwise pick the single cheapest **contiguous** block of forecast intervals
+1. Hysteresis: don't start until `grid_charge_hysteresis_soc` (3%) below target.
+2. `required_hours = deficit_kWh / effective_charge_rate × GRID_CHARGE_TIME_MARGIN`
+   (1.3). The margin is deliberate slack: arriving at the peak short costs peak
+   prices for the shortfall, while starting early costs at most a little
+   off-peak energy.
+3. `effective_charge_rate` = **the lower of** the modelled and the *measured*
+   rate, floored at `GRID_CHARGE_MIN_EFFECTIVE_KW` (0.5 kW):
+   - **modelled** = `grid_charge_rate_kw + PV − load`. The Sigen
+     `grid_import_limitation` caps *total* grid import (load + battery) and PV
+     First diverts PV into the pack, so the battery fills at rate + PV − load,
+     not the raw rate.
+   - **measured** = `_observed_charge_kw`, an EMA of ΔSOC/Δt sampled every cycle
+     while charging (`_record_charge_rate_sample`). The modelled rate is only an
+     upper bound — the plant may not draw the full limit at all. On 2026-08-09 it
+     modelled 16 kW while the packs actually took **10.8 kW**, so the window was
+     booked at ~half the time it needed and the charge ran out of night.
+     Under-estimating just starts the charge earlier; over-estimating misses the
+     deadline.
+4. **Forced** if `hours_remaining_to_peak < required × GRID_CHARGE_FORCE_FACTOR`
+   (1.5) — charge immediately, needs no forecast. Once forced the charge
+   **latches to its deadline**: the ratio flickers false as SOC climbs and
+   `required` shrinks, which chattered the mode on/off ~40 times in three hours
+   before the latch.
+5. Otherwise pick the single cheapest **contiguous** block of forecast intervals
    before the deadline (`_select_cheapest_charge_window`); active only while now
    sits in a selected interval. The contiguous block avoids the on/off thrash that
    let REBALANCE steal the gaps.
+
+### 4e. Top-up hold — reaching target early doesn't end the charge
+
+Hitting the target *before* the deadline used to simply stop the charge, after
+which household load coasted the pack back down and it met the peak several
+percent low (86.5% → 80.0% over the 45 min around the 06:00 peak on 2026-08-09).
+
+Instead, meeting the target **latches a hold to the deadline**
+(`_grid_charge_hold_until`). For the rest of the window Sentinel tops the pack
+back up whenever it sags `GRID_CHARGE_TOPUP_BAND_SOC` (1%) below target, and runs
+the top-up all the way back to target before releasing. So the pack enters the
+peak *at* target, and the surplus time between "charged" and "peak" is spent
+carrying the house on cheap grid rather than draining the battery it just filled.
+
+Both latches are stamped with the deadline they were set for and released when it
+passes (`_expire_charge_latches`), so each phase starts clean; a re-detected onset
+that moves less than an hour counts as the same peak and just refines the stamp.
 
 ---
 

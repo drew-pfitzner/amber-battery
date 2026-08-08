@@ -1,5 +1,5 @@
 # Sentinel / Sigen — Known Issues & Investigation Log
-_Last updated: 2026-07-27_
+_Last updated: 2026-08-09_
 ## TL;DR
 Plant 1 (`192.168.1.82`) used to repeatedly drop off Home Assistant. Over one long
 session we ruled out the network as the primary cause, fixed a self-inflicted
@@ -11,6 +11,10 @@ required. See #3.
 
 **If BOTH plants drop together and are IP-unreachable (not just Modbus): suspect
 the shed circuit breaker — it powers the batteries and their WiFi AP (see #4).**
+
+**If GRID_CHARGE only ever charges in one late block before the peak: check the
+error log for `Failed to fetch Amber forecasts` — a renamed service argument
+silently disabled all price-aware charging (see #5).**
 ---
 ## System topology & naming (the confusing part — read this first)
 Two independent Sigenergy ESS plants, each with its own gateway/dongle on
@@ -83,6 +87,38 @@ they are **fully IP-unreachable**, not just Modbus-down.
 | One (or both) down but the dongle **pings fine**, only `:502` is closed | `.82` comms module wedged / mySigen app / firmware (#3) | Power-cycle the affected gateway(s) |
 Sentinel is not involved either way — during any outage it holds its safe
 FAILSAFE path and issues no writes to the unreachable plant(s).
+### 5. `amberelectric.get_forecasts` renamed its argument — FIXED 2026-08-09
+**Symptom:** the pack met the morning peak short (86.5% vs a 90% target on
+2026-08-09), having done all its charging in one last-minute block from 02:45,
+while `sensor.…active_mode` chattered GRID_CHARGE↔SELF_CONSUMPTION **~40 times**
+between 02:45 and 06:00.
+
+**Root cause:** the service field is now **`config_entry_id`** and takes the
+config **entry_id**, not the site title. Sentinel still passed
+`{"config_entry": "Hill End"}`, so every call failed schema validation:
+```
+custom_components.sentinel.coordinator
+Failed to fetch Amber forecasts: extra keys not allowed @ data['config_entry']
+  count: 1231   first: 2026-08-08 20:18
+```
+With `forecasts=None` the whole price-aware half of GRID_CHARGE is dead:
+- `_detect_peak_onset` falls back to the fixed 06:00 / 16:00 hours;
+- `_select_cheapest_charge_window` is skipped entirely (`if not forecasts: return False`),
+  so the **only** path that can ever charge is the last-minute forced one.
+
+That also explains the chatter: the forced test (`hours_remaining < required × factor`)
+was re-evaluated every 30 s, and as SOC climbed `required` shrank, so the
+inequality flickered false → true → false for three hours.
+
+**Fixes (coordinator.py):** call with `config_entry_id=entry.entry_id`, falling
+back to the legacy key for older HA; throttle the failure warning; and **latch**
+the forced charge to its deadline so it can't chatter. Verified against the live
+service — the new signature returns 50 intervals.
+
+**Watch for this:** a silent `_LOGGER.warning` in a 30 s loop is easy to miss.
+If GRID_CHARGE only ever charges in one late block, check the error log for
+`Failed to fetch Amber forecasts` first.
+
 ---
 ## Changes made this session
 - **coordinator.py** (Sentinel): write guards + `_plant_is_reachable_for` (see #2).
