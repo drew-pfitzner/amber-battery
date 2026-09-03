@@ -183,7 +183,7 @@ GRID_CHARGE work in the phase logs below.
   `__pycache__`, restart HA. Removed old entities orphan (unavailable) until
   deleted. Learner runs on seeds ~1–2 weeks before it fully self-tunes.
 
-### MORNING_EXPORT — 2026-09-03 (BUILT, NOT DEPLOYED)
+### MORNING_EXPORT — 2026-09-03 (DEPLOYED, awaiting first live morning)
 New priority-4 mode. Mornings were finishing with charge still in the pack while
 the day's feed-in went negative, so excess solar had nowhere to go.
 - [x] `MODE_MORNING_EXPORT` + `switch.sentinel_morning_export_enabled` (default OFF)
@@ -200,10 +200,38 @@ the day's feed-in went negative, so excess solar had nowhere to go.
 - [x] Simulated offline: floor table across sunny/average/dull/no-forecast days,
   decay through the morning, 10/10 trigger-gating cases, and a minute-by-minute
   sunny-morning replay (17.9 kWh sold, 2 mode changes, refilled by noon)
-- [ ] **Deploy & test:** arm the switch on a sunny forecast day; confirm
-  `morning_export_floor_soc` decays through the morning, that SOC stops *at* the
-  floor and never draws import before 09:00, and that the pack refills to the
-  evening target on solar alone.
+- [x] **Deployed 2026-09-03 21:37** (Samba copy + pycache clear + HA restart at
+  21:39). All 6 entities registered; takeover-hour number correctly
+  `disabled_by=integration`. Armed 21:52, no failsafe, stack idle in
+  SELF_CONSUMPTION.
+- [ ] **First live morning: 2026-09-04.** Watch
+  `sensor.…morning_export_floor_soc` decay from ~39% at 06:00 toward the 25% min
+  reserve by ~07:40, SOC stop *at* the floor, and **zero grid import** before
+  09:00.
+
+**Live entity naming:** the device sits in the *Site Office* area, so entities are
+`…site_office_sentinel_energy_manager_*` (e.g.
+`switch.site_office_sentinel_energy_manager_enable_morning_export`), not the
+`sensor.sentinel_*` shorthand used elsewhere in these docs.
+
+**Live tuning as deployed** (differs from code defaults): min reserve **25%**
+(not 20), grid-charge hysteresis **5%** (not 3), grid charge rate **15 kW**,
+morning export rate **15 kW** (set by Drew in the UI), morning export min price
+**$0.10** — lowered from the $0.15 default because 2026-09-04's feed-in forecast
+peaked at only **$0.13** (07:00) and the mode would never have fired. Feed-in that
+day goes **negative (−$0.01) from 09:00**, which is the exact problem this mode
+exists to solve.
+
+**Real learned loads** (14 days, as at deploy): morning **11.97 kWh**, daytime
+**31.7 kWh**, evening **13.21 kWh** — well below the 20/45/40 seeds, so the
+floors are much lower than the seeded worked example in `CONTROL_LOGIC.md §4b`.
+
+**GRID_CHARGE latch interaction, observed live:** SOC (73%) sits far above the
+overnight target (34.4%), so from 22:00 GRID_CHARGE latches a top-up hold to the
+06:00 morning-peak onset. The latch guard therefore holds MORNING_EXPORT off
+until **06:00**, making the real first-morning window **06:00 → 09:00** rather
+than 04:00 → 09:00. That is the intended ordering — the peak onset is where the
+high feed-in price starts — but it is worth knowing when reading the logs.
 
 ### Charge-completion fixes — 2026-08-09 (BUILT, NOT DEPLOYED)
 Diagnosed from the 2026-08-08/09 overnight: pack reached **86.5%** against a 90%
