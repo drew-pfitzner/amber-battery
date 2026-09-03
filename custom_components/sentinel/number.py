@@ -23,6 +23,12 @@ from .const import (
     OPT_GRID_CHARGE_MIN_RESERVE_SOC,
     OPT_GRID_CHARGE_MAX_SOC,
     OPT_OUTAGE_TARGET_SOC,
+    OPT_MORNING_EXPORT_MIN_PRICE,
+    OPT_MORNING_EXPORT_RATE_KW,
+    OPT_MORNING_EXPORT_TAKEOVER_HOUR,
+    DEFAULT_MORNING_EXPORT_MIN_PRICE,
+    DEFAULT_MORNING_EXPORT_RATE_KW,
+    DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
@@ -84,6 +90,27 @@ NUMBER_DESCRIPTIONS = [
         native_unit_of_measurement=PERCENTAGE,
         option_key=OPT_OUTAGE_TARGET_SOC,
     ),
+    SentinelNumberDescription(
+        key="morning_export_min_price",
+        name="Morning Export Min Price",
+        icon="mdi:cash-plus",
+        native_min_value=0.0,
+        native_max_value=2.0,
+        native_step=0.01,
+        native_unit_of_measurement="$/kWh",
+        mode=NumberMode.BOX,
+        option_key=OPT_MORNING_EXPORT_MIN_PRICE,
+    ),
+    SentinelNumberDescription(
+        key="morning_export_rate_kw",
+        name="Morning Export Rate",
+        icon="mdi:transmission-tower-export",
+        native_min_value=1.0,
+        native_max_value=20.0,
+        native_step=0.5,
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        option_key=OPT_MORNING_EXPORT_RATE_KW,
+    ),
     # --- Advanced tuning (disabled by default — enable in the entity settings
     #     if you ever need to touch them; sensible defaults otherwise) ---
     SentinelNumberDescription(
@@ -97,6 +124,18 @@ NUMBER_DESCRIPTIONS = [
         mode=NumberMode.BOX,
         entity_registry_enabled_default=False,
         option_key=OPT_GRID_CHARGE_HYSTERESIS_SOC,
+    ),
+    SentinelNumberDescription(
+        key="morning_export_takeover_hour",
+        name="Morning Export Solar Takeover Hour",
+        icon="mdi:weather-sunny",
+        native_min_value=6.0,
+        native_max_value=12.0,
+        native_step=1.0,
+        native_unit_of_measurement="h",
+        mode=NumberMode.BOX,
+        entity_registry_enabled_default=False,
+        option_key=OPT_MORNING_EXPORT_TAKEOVER_HOUR,
     ),
     SentinelNumberDescription(
         key="solar_curtail_price_threshold",
@@ -189,6 +228,9 @@ class SentinelNumber(CoordinatorEntity, NumberEntity):
         OPT_GRID_CHARGE_MIN_RESERVE_SOC: DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
         OPT_GRID_CHARGE_MAX_SOC: DEFAULT_GRID_CHARGE_MAX_SOC,
         OPT_OUTAGE_TARGET_SOC: DEFAULT_OUTAGE_TARGET_SOC,
+        OPT_MORNING_EXPORT_MIN_PRICE: DEFAULT_MORNING_EXPORT_MIN_PRICE,
+        OPT_MORNING_EXPORT_RATE_KW: DEFAULT_MORNING_EXPORT_RATE_KW,
+        OPT_MORNING_EXPORT_TAKEOVER_HOUR: DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR,
     }
 
     @property

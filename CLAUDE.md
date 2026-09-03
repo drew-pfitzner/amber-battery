@@ -41,7 +41,7 @@ Both phases feed one meter — meter sees **net** of both phases. During rebalan
 
 ## Sentinel Architecture
 
-Custom HA integration: **6-mode** priority stack evaluated every 30 seconds. First
+Custom HA integration: **7-mode** priority stack evaluated every 30 seconds. First
 mode whose trigger is true wins and is the only one to write controls that cycle.
 
 > Redesigned July 2026 (`OPTIMISATION_PLAN.md`, branch
@@ -54,9 +54,10 @@ mode whose trigger is true wins and is the only one to write controls that cycle
 | 1 | **FAILSAFE** | Any Sigen critical entity unavailable ≥2 polls OR HA switch off → Maximum Self Consumption + 12/12 limits |
 | 2 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
 | 3 | **GRID_CHARGE** | Two-peak charger: detects the next **price-peak onset** from the Amber forecast and charges to a **learned** seasonal target (evening) / adaptive overnight cap (morning) in the cheapest window before it; forces if time-pressed |
-| 4 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
-| 5 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
-| 6 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
+| 4 | **MORNING_EXPORT** | Morning window + Amber feed-in ≥ min price + SOC above the learned sell-down floor → Command Discharging (PV First), export capped at the configured rate |
+| 5 | **REBALANCE** | SOC diff > threshold → discharge higher, charge lower at matched rate |
+| 6 | **SOLAR_CURTAIL** | Amber feed-in price < threshold (default $0.01) + solar producing → export limit 0 kW |
+| 7 | **SELF_CONSUMPTION** | Always valid → Maximum Self Consumption |
 
 ### Key Design Decisions
 
@@ -100,6 +101,21 @@ mode whose trigger is true wins and is the only one to write controls that cycle
   or Amber high/spike) within a morning/evening band; the charge window closes
   there, so the "be charged by" time tracks the tariff's seasonal shift. Falls
   back to fixed hours (06:00 / 16:00) with no forecast.
+- **MORNING_EXPORT sells the morning surplus without losing the morning cover**
+  (added 2026-09-03). Mornings were ending with energy still in the pack while
+  midday feed-in went *negative* — the day's solar had nowhere to go. The mode
+  discharges to grid while the morning feed-in price is high, down to a floor
+  that is the **higher** of: (1) the ESS reserve plus the *learned* morning load
+  still ahead of us (pro-rated across the 06–09 band as the morning burns off,
+  never below current live load held flat to takeover, × a 1.2 margin) — this is
+  the "never import at the morning peak" guarantee; and (2) the evening target
+  minus what today's Solcast can refill (`solcast_today − learned daytime load`),
+  so we never sell energy the sun can't put back. Both clamped up to
+  `grid_charge_min_reserve_soc`. **No Solcast → assume no refill**, so the floor
+  is the whole evening target and the mode effectively won't fire. Blocked while
+  GRID_CHARGE/OUTAGE_PREP is active *or still holding a latch* — between top-ups
+  the hold reads inactive, and without that guard it would sell off the charge
+  bought for the morning peak. See `CONTROL_LOGIC.md §4b`.
 - Rebalance uses hysteresis: start threshold (default **10%**) vs stop (3%); PV
   First modes for both legs; requires grid connection on both plants; suppressed
   while GRID_CHARGE/OUTAGE_PREP active
@@ -166,6 +182,28 @@ GRID_CHARGE work in the phase logs below.
 - [ ] **Deploy & test:** Samba-copy `custom_components/sentinel/`, clear
   `__pycache__`, restart HA. Removed old entities orphan (unavailable) until
   deleted. Learner runs on seeds ~1–2 weeks before it fully self-tunes.
+
+### MORNING_EXPORT — 2026-09-03 (BUILT, NOT DEPLOYED)
+New priority-4 mode. Mornings were finishing with charge still in the pack while
+the day's feed-in went negative, so excess solar had nowhere to go.
+- [x] `MODE_MORNING_EXPORT` + `switch.sentinel_morning_export_enabled` (default OFF)
+- [x] `_compute_morning_export_floor` — max(morning cover, evening refill,
+  min reserve); `_morning_cover_kwh` pro-rates the learned morning load across the
+  remaining 06–09 band and floors at live load × hours-to-takeover
+- [x] `_check_morning_export_conditions` — window/price/on-grid/floor gating, 3%
+  restart band, blocked by GRID_CHARGE latches as well as active charging
+- [x] `_async_apply_morning_export` — Command Discharging (PV First), export split
+  biased to the higher-SOC pack, import left at 12 kW; restore-on-exit wired up
+- [x] Numbers `morning_export_min_price` ($0.15) / `morning_export_rate_kw` (10 kW)
+  / `morning_export_takeover_hour` (09, advanced); `sensor.…morning_export_floor_soc`;
+  `binary_sensor.…morning_export_active`
+- [x] Simulated offline: floor table across sunny/average/dull/no-forecast days,
+  decay through the morning, 10/10 trigger-gating cases, and a minute-by-minute
+  sunny-morning replay (17.9 kWh sold, 2 mode changes, refilled by noon)
+- [ ] **Deploy & test:** arm the switch on a sunny forecast day; confirm
+  `morning_export_floor_soc` decays through the morning, that SOC stops *at* the
+  floor and never draws import before 09:00, and that the pack refills to the
+  evening target on solar alone.
 
 ### Charge-completion fixes — 2026-08-09 (BUILT, NOT DEPLOYED)
 Diagnosed from the 2026-08-08/09 overnight: pack reached **86.5%** against a 90%

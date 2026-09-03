@@ -15,6 +15,7 @@ MODE_FAILSAFE = "FAILSAFE"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
+MODE_MORNING_EXPORT = "MORNING_EXPORT"
 MODE_SOLAR_CURTAIL = "SOLAR_CURTAIL"
 MODE_SELF_CONSUMPTION = "SELF_CONSUMPTION"
 
@@ -74,6 +75,11 @@ OPT_GRID_CHARGE_HYSTERESIS_SOC = "grid_charge_hysteresis_soc"
 OPT_GRID_CHARGE_MIN_RESERVE_SOC = "grid_charge_min_reserve_soc"
 OPT_GRID_CHARGE_MAX_SOC = "grid_charge_max_soc"
 
+# Options keys — morning export
+OPT_MORNING_EXPORT_MIN_PRICE = "morning_export_min_price"
+OPT_MORNING_EXPORT_RATE_KW = "morning_export_rate_kw"
+OPT_MORNING_EXPORT_TAKEOVER_HOUR = "morning_export_takeover_hour"
+
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
 OPT_OUTAGE_TARGET_SOC = "outage_target_soc"
@@ -87,6 +93,14 @@ DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below t
 DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
 DEFAULT_GRID_CHARGE_HYSTERESIS_SOC = 3.0    # % — restart band below target once stopped
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
+
+# Morning export — sell the pack down while the morning feed-in price is high,
+# but only as far as the *floor* that still covers the house until solar takes
+# over, and only as far as the coming day's solar can put back before the
+# evening peak. See MORNING_EXPORT in CONTROL_LOGIC.md.
+DEFAULT_MORNING_EXPORT_MIN_PRICE = 0.15     # $/kWh feed-in — below this, don't sell
+DEFAULT_MORNING_EXPORT_RATE_KW = 10.0       # kW total export across both plants
+DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR = 9.0  # local hour solar is assumed to carry the house
 
 # Grid charge SOC clamps (Stage 3)
 DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC = 20.0  # % — never charge target below this
@@ -128,6 +142,21 @@ PEAK_DETECT_FACTOR = 1.4                     # price ≥ baseline × this ⇒ pe
 PEAK_DETECT_BASELINE_PCTL = 0.30             # baseline = this percentile of prices
 MORNING_PEAK_BAND = (4, 11)                  # search 04:00–11:00 for morning onset
 EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening onset
+
+# MORNING_EXPORT window and safety factors.
+# The window opens at this hour — early enough to catch a pre-dawn feed-in spike,
+# after the overnight charge has normally finished — and closes at the (settable)
+# solar-takeover hour. Outside it the mode never fires.
+MORNING_EXPORT_START_HOUR = 4
+# The reserve the mode leaves behind is the *modelled* remaining morning load
+# multiplied by this. Selling too much means buying it back at morning-peak
+# prices, which costs far more than the last kWh of export earns, so the model is
+# deliberately padded.
+MORNING_EXPORT_RESERVE_MARGIN = 1.2
+# Restart band: once the pack reaches the floor, it must recover this far above
+# it (e.g. from early solar) before exporting resumes. Without the band SOC
+# hovers on the floor and the mode chatters on and off every cycle.
+MORNING_EXPORT_RESTART_BAND_SOC = 3.0
 
 # Floor for the *net* charge power used to size required_hours. The battery fills
 # at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid

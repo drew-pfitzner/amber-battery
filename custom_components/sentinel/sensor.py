@@ -49,6 +49,10 @@ async def async_setup_entry(
             "mdi:weather-sunset", PERCENTAGE,
         ),
         SentinelDataSensor(
+            coordinator, "morning_export_floor_soc", "Morning Export Floor SOC",
+            "mdi:battery-arrow-down", PERCENTAGE,
+        ),
+        SentinelDataSensor(
             coordinator, "learned_morning_load", "Learned Morning Load",
             "mdi:weather-sunset-up", UnitOfEnergy.KILO_WATT_HOUR,
         ),
