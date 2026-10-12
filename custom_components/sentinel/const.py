@@ -1,5 +1,7 @@
 """Constants for Sentinel Energy Manager."""
 
+from datetime import timedelta
+
 DOMAIN = "sentinel"
 SCAN_INTERVAL_SECONDS = 30
 
@@ -13,6 +15,7 @@ MODE_FAILSAFE = "FAILSAFE"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
+MODE_MORNING_EXPORT = "MORNING_EXPORT"
 MODE_SOLAR_CURTAIL = "SOLAR_CURTAIL"
 MODE_SELF_CONSUMPTION = "SELF_CONSUMPTION"
 
@@ -72,6 +75,11 @@ OPT_GRID_CHARGE_HYSTERESIS_SOC = "grid_charge_hysteresis_soc"
 OPT_GRID_CHARGE_MIN_RESERVE_SOC = "grid_charge_min_reserve_soc"
 OPT_GRID_CHARGE_MAX_SOC = "grid_charge_max_soc"
 
+# Options keys — morning export
+OPT_MORNING_EXPORT_MIN_PRICE = "morning_export_min_price"
+OPT_MORNING_EXPORT_RATE_KW = "morning_export_rate_kw"
+OPT_MORNING_EXPORT_TAKEOVER_HOUR = "morning_export_takeover_hour"
+
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
 OPT_OUTAGE_TARGET_SOC = "outage_target_soc"
@@ -85,6 +93,14 @@ DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below t
 DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
 DEFAULT_GRID_CHARGE_HYSTERESIS_SOC = 3.0    # % — restart band below target once stopped
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
+
+# Morning export — sell the pack down while the morning feed-in price is high,
+# but only as far as the *floor* that still covers the house until solar takes
+# over, and only as far as the coming day's solar can put back before the
+# evening peak. See MORNING_EXPORT in CONTROL_LOGIC.md.
+DEFAULT_MORNING_EXPORT_MIN_PRICE = 0.15     # $/kWh feed-in — below this, don't sell
+DEFAULT_MORNING_EXPORT_RATE_KW = 10.0       # kW total export across both plants
+DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR = 9.0  # local hour solar is assumed to carry the house
 
 # Grid charge SOC clamps (Stage 3)
 DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC = 20.0  # % — never charge target below this
@@ -127,12 +143,65 @@ PEAK_DETECT_BASELINE_PCTL = 0.30             # baseline = this percentile of pri
 MORNING_PEAK_BAND = (4, 11)                  # search 04:00–11:00 for morning onset
 EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening onset
 
+# MORNING_EXPORT window and safety factors.
+# The window opens at this hour — early enough to catch a pre-dawn feed-in spike,
+# after the overnight charge has normally finished — and closes at the (settable)
+# solar-takeover hour. Outside it the mode never fires.
+MORNING_EXPORT_START_HOUR = 4
+# The reserve the mode leaves behind is the *modelled* remaining morning load
+# multiplied by this. Selling too much means buying it back at morning-peak
+# prices, which costs far more than the last kWh of export earns, so the model is
+# deliberately padded.
+MORNING_EXPORT_RESERVE_MARGIN = 1.2
+# Restart band: once the pack reaches the floor, it must recover this far above
+# it (e.g. from early solar) before exporting resumes. Without the band SOC
+# hovers on the floor and the mode chatters on and off every cycle.
+MORNING_EXPORT_RESTART_BAND_SOC = 3.0
+
 # Floor for the *net* charge power used to size required_hours. The battery fills
 # at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid
 # import, and PV First diverts PV into the pack), so a raw charge_rate under-books
 # the window and the pack lands just shy of target. Clamp to this floor so the
 # estimate stays finite when load transiently exceeds the rate.
 GRID_CHARGE_MIN_EFFECTIVE_KW = 0.5
+
+# Observed charge rate. The modelled rate (charge_rate + PV − load) is an upper
+# bound the plant often can't hit — inverter/BMS taper, per-plant limits, a
+# charge_rate set above what the Sigens will actually draw. Sentinel therefore
+# *measures* the net kW reaching the pack while it charges (ΔSOC over Δt) and
+# keeps an EMA of it, using whichever of modelled/observed is lower to size
+# required_hours. Under-estimating the rate only starts the charge earlier;
+# over-estimating runs the clock out short of target (seen 2026-08-09).
+GRID_CHARGE_RATE_EMA_ALPHA = 0.25          # weight of each new observation
+GRID_CHARGE_RATE_MIN_SAMPLE_S = 60         # ignore samples shorter than this
+GRID_CHARGE_RATE_MAX_SAMPLE_S = 600        # ignore stale gaps (restart, dropout)
+GRID_CHARGE_RATE_MIN_SAMPLES = 3           # trust the EMA only after this many
+
+# Safety margin on the charge duration. required_hours is booked this much longer
+# than the arithmetic minimum so a mid-charge load increase, a slower-than-modelled
+# ramp, or a late start doesn't land the pack short at the peak.
+GRID_CHARGE_TIME_MARGIN = 1.3
+
+# Forced charge: fires when the time left to the peak drops below
+# required_hours × this. Once forced, the charge LATCHES to the deadline — the
+# ratio recomputes every cycle as SOC climbs, so without the latch the mode
+# chattered on/off every few minutes (40+ transitions overnight, 2026-08-09).
+GRID_CHARGE_FORCE_FACTOR = 1.5
+
+# Top-up hold. Reaching target *before* the deadline used to end the charge, and
+# household load then coasted the pack down so it met the peak several % below
+# target. Instead GRID_CHARGE stays latched until the deadline passes and tops
+# the pack back up whenever it sags this far below target.
+GRID_CHARGE_TOPUP_BAND_SOC = 1.0
+
+# How far a re-detected peak onset may move before its latches are treated as
+# belonging to a *different* peak. Onsets jitter by an interval or two as the
+# Amber forecast refreshes; a whole hour of movement is a genuinely new peak.
+GRID_CHARGE_LATCH_TOLERANCE = timedelta(hours=1)
+
+# Throttle for repeated Amber forecast failures (seconds between warnings) — a
+# broken service signature otherwise logs every 30 s poll (1231 lines/10 h).
+AMBER_FORECAST_WARN_INTERVAL_S = 900
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"

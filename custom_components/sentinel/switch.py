@@ -13,6 +13,7 @@ from .const import (
     MODE_SOLAR_CURTAIL,
     MODE_GRID_CHARGE,
     MODE_OUTAGE_PREP,
+    MODE_MORNING_EXPORT,
 )
 
 
@@ -49,6 +50,12 @@ SWITCH_DESCRIPTIONS = [
         name="Enable Grid Charging",
         icon="mdi:battery-charging",
         mode_key=MODE_GRID_CHARGE,
+    ),
+    SentinelSwitchDescription(
+        key="morning_export_enabled",
+        name="Enable Morning Export",
+        icon="mdi:transmission-tower-export",
+        mode_key=MODE_MORNING_EXPORT,
     ),
     SentinelSwitchDescription(
         key="outage_prep_enabled",
