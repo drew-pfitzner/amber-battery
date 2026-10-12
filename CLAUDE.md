@@ -52,6 +52,7 @@ mode whose trigger is true wins and is the only one to write controls that cycle
 | Priority | Mode | Trigger |
 |---|---|---|
 | 1 | **FAILSAFE** | Any Sigen critical entity unavailable ≥2 polls OR HA switch off → Maximum Self Consumption + 12/12 limits |
+| 1½ | **SPIKE_MISSION** | `input_boolean.spike_mission_active` on → Sentinel **yields** (writes nothing); the HA automation `automation.spike_mission_controller` flies the export from the Spike Control dashboard |
 | 2 | **OUTAGE_PREP** | Registered outage within prep window → charge to target SOC |
 | 3 | **GRID_CHARGE** | Two-peak charger: detects the next **price-peak onset** from the Amber forecast and charges to a **learned** seasonal target (evening) / adaptive overnight cap (morning) in the cheapest window before it; forces if time-pressed |
 | 4 | **MORNING_EXPORT** | Morning window + Amber feed-in ≥ min price + SOC above the learned sell-down floor → Command Discharging (PV First), export capped at the configured rate |
@@ -182,6 +183,22 @@ GRID_CHARGE work in the phase logs below.
 - [ ] **Deploy & test:** Samba-copy `custom_components/sentinel/`, clear
   `__pycache__`, restart HA. Removed old entities orphan (unavailable) until
   deleted. Learner runs on seeds ~1–2 weeks before it fully self-tunes.
+
+### SPIKE_MISSION — 2026-10-12 (DEPLOYED)
+Manual price-spike export is flown by an HA automation from the `/spike-control`
+dashboard (levers: sell-down floor = mean SOC, total rate, rebalance %, min feed-in,
+window end). Starting one used to mean disabling Sentinel's config entry by hand.
+- [x] `MODE_SPIKE_MISSION`: while `input_boolean.spike_mission_active` is on,
+  Sentinel enters it right after the FAILSAFE check and writes nothing; leaving it
+  restores 12 kW limits and the normal stack resumes. FAILSAFE still outranks it.
+- [x] State-change listener on the toggle → immediate refresh, so no 30 s overlap.
+- [x] The controller's own hand-back (Max Self Consumption + 12 kW) now runs only
+  if Sentinel's active-mode sensor is unavailable.
+- [x] Deployed 16:08 (Samba copy of `__init__.py`/`const.py`/`coordinator.py`, live
+  files verified identical to `7e3dc87` first, pycache cleared, HA restart).
+  Live test: toggle on → SPIKE_MISSION in <5 s, plants untouched; off → back in <5 s.
+- Controller + dashboard source: `../power/spike_control/`. Per-plant export
+  ceiling is ~7 kW (installer/DNSP setting, not visible in HA).
 
 ### MORNING_EXPORT — 2026-09-03 (DEPLOYED, awaiting first live morning)
 New priority-4 mode. Mornings were finishing with charge still in the pack while
