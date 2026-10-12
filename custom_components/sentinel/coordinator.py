@@ -1,10 +1,13 @@
 """Sentinel Energy Manager coordinator."""
 
+import asyncio
 from datetime import date, datetime, time, timedelta
 import logging
+from time import monotonic
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -14,12 +17,12 @@ from .const import (
     DOMAIN,
     SCAN_INTERVAL_SECONDS,
     MODE_FAILSAFE,
-    MODE_SPIKE_EXPORT,
+    MODE_SPIKE_MISSION,
     MODE_OUTAGE_PREP,
     MODE_GRID_CHARGE,
     MODE_REBALANCE,
+    MODE_MORNING_EXPORT,
     MODE_SOLAR_CURTAIL,
-    MODE_MORNING_FLOOR,
     MODE_SELF_CONSUMPTION,
     CONF_SOC_1,
     CONF_MODE_1,
@@ -41,23 +44,31 @@ from .const import (
     OPT_REBALANCE_STOP_THRESHOLD,
     OPT_REBALANCE_TRANSFER_RATE,
     OPT_SOLAR_CURTAIL_PRICE_THRESHOLD,
-    OPT_MORNING_FLOOR_SOC,
     DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
     DEFAULT_REBALANCE_START_THRESHOLD,
     DEFAULT_REBALANCE_STOP_THRESHOLD,
     DEFAULT_REBALANCE_TRANSFER_RATE,
-    DEFAULT_MORNING_FLOOR_SOC,
-    DEFAULT_NORMAL_BACKUP_SOC,
     DEFAULT_MAX_GRID_LIMIT,
     DEFAULT_MAX_CHARGE_SOC,
     DEFAULT_BACKUP_BUFFER,
-    GRID_CHARGE_WINDOWS,
     GRID_CHARGE_MORNING_DEADLINE_HOUR,
+    GRID_CHARGE_MIN_EFFECTIVE_KW,
+    GRID_CHARGE_RATE_EMA_ALPHA,
+    GRID_CHARGE_RATE_MIN_SAMPLE_S,
+    GRID_CHARGE_RATE_MAX_SAMPLE_S,
+    GRID_CHARGE_RATE_MIN_SAMPLES,
+    GRID_CHARGE_TIME_MARGIN,
+    GRID_CHARGE_FORCE_FACTOR,
+    GRID_CHARGE_TOPUP_BAND_SOC,
+    GRID_CHARGE_LATCH_TOLERANCE,
+    AMBER_FORECAST_WARN_INTERVAL_S,
     GRID_CHARGE_DAYTIME_START_HOUR,
-    MORNING_FLOOR_START_HOUR,
-    MORNING_FLOOR_START_MINUTE,
-    MORNING_FLOOR_END_HOUR,
-    MORNING_FLOOR_END_MINUTE,
+    GRID_CHARGE_OVERNIGHT_START_HOUR,
+    FALLBACK_EVENING_PEAK_HOUR,
+    PEAK_DETECT_FACTOR,
+    PEAK_DETECT_BASELINE_PCTL,
+    MORNING_PEAK_BAND,
+    EVENING_PEAK_BAND,
     PV_POWER_1,
     PV_POWER_2,
     LOAD_POWER_1,
@@ -74,40 +85,37 @@ from .const import (
     MODE_COMMAND_DISCHARGING_PV_FIRST,
     CONF_CAPACITY_KWH,
     CONF_AMBER_SITE_NAME,
-    OPT_GRID_CHARGE_TARGET_SOC,
-    OPT_GRID_CHARGE_DEADLINE_HOUR,
     OPT_GRID_CHARGE_RATE_KW,
     OPT_GRID_CHARGE_HYSTERESIS_SOC,
-    OPT_GRID_CHARGE_ADAPTIVE,
-    OPT_GRID_CHARGE_SOLAR_LOW_KWH,
-    OPT_GRID_CHARGE_SOLAR_HIGH_KWH,
-    OPT_GRID_CHARGE_TARGET_HIGH_SOC,
-    OPT_GRID_CHARGE_TARGET_LOW_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-    OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-    OPT_EXPECTED_DAYTIME_LOAD_KWH,
+    OPT_GRID_CHARGE_MIN_RESERVE_SOC,
+    OPT_GRID_CHARGE_MAX_SOC,
+    OPT_MORNING_EXPORT_MIN_PRICE,
+    OPT_MORNING_EXPORT_RATE_KW,
+    OPT_MORNING_EXPORT_TAKEOVER_HOUR,
+    DEFAULT_MORNING_EXPORT_MIN_PRICE,
+    DEFAULT_MORNING_EXPORT_RATE_KW,
+    DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR,
+    MORNING_EXPORT_START_HOUR,
+    MORNING_EXPORT_RESERVE_MARGIN,
+    MORNING_EXPORT_RESTART_BAND_SOC,
     OPT_OUTAGE_DATE,
     OPT_OUTAGE_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
     DEFAULT_GRID_CHARGE_RATE_KW,
     DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
-    DEFAULT_GRID_CHARGE_ADAPTIVE,
-    DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
-    DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
-    DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
-    DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-    DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-    DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
     DEFAULT_OUTAGE_TARGET_SOC,
+    DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
+    DEFAULT_GRID_CHARGE_MAX_SOC,
+    DEFAULT_SEED_MORNING_KWH,
+    DEFAULT_SEED_EVENING_KWH,
+    DEFAULT_SEED_DAYTIME_KWH,
+    CONF_SOLCAST_TODAY,
     CONF_SOLCAST_TOMORROW,
     FAILSAFE_DEBOUNCE_POLLS,
     OUTAGE_PREP_START_HOUR,
     OUTAGE_PREP_END_HOUR,
+    SPIKE_MISSION_ENTITY,
 )
+from .learning import LoadLearner, MORNING_BAND
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,6 +123,14 @@ _LOGGER = logging.getLogger(__name__)
 # from the current value by less than this is treated as "already set" and the
 # write is skipped. Keeps redundant writes off the Sigen Modbus interface.
 WRITE_TOLERANCE = 0.05
+
+# Minimum spacing between consecutive Modbus-backed writes to the Sigen gateways.
+# Each dongle has a single-connection Modbus interface that can be knocked offline
+# by a burst of commands, so a mode change (which may touch several controls) is
+# trickled out one write at a time with at least this gap between them, and each
+# write is awaited to completion before the next is issued. A full ~8-write mode
+# change therefore spreads over a few seconds — comfortably inside the 30 s cycle.
+WRITE_MIN_GAP_SECONDS = 0.4
 
 
 class SentinelCoordinator(DataUpdateCoordinator[dict]):
@@ -137,10 +153,9 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         self._mode_enabled = {
             MODE_REBALANCE: config_entry.options.get("rebalance_enabled", False),
             MODE_SOLAR_CURTAIL: config_entry.options.get("solar_curtail_enabled", False),
-            MODE_MORNING_FLOOR: config_entry.options.get("morning_floor_enabled", False),
             MODE_GRID_CHARGE: config_entry.options.get("grid_charge_enabled", False),
-            MODE_SPIKE_EXPORT: config_entry.options.get("spike_export_enabled", False),
             MODE_OUTAGE_PREP: config_entry.options.get("outage_prep_enabled", False),
+            MODE_MORNING_EXPORT: config_entry.options.get("morning_export_enabled", False),
         }
 
         self.device_info = DeviceInfo(
@@ -155,11 +170,35 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         # Forecast cache for GRID_CHARGE
         self._forecast_cache: list[dict] | None = None
         self._forecast_cache_time: datetime | None = None
+        self._forecast_warned_monotonic: float | None = None
         self._grid_charge_active: bool = False
-        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_TARGET_SOC
+        self._grid_charge_target: float = DEFAULT_GRID_CHARGE_MAX_SOC
         self._outage_prep_active: bool = False
+        # GRID_CHARGE latches, both keyed to the deadline they were set for so a
+        # new charge phase starts clean. `forced` holds a time-pressed charge on
+        # until the deadline (the trigger ratio flickers as SOC climbs);
+        # `hold` keeps topping the pack up after target is met, so it enters the
+        # peak full rather than coasting down on household load.
+        self._grid_charge_forced_until: datetime | None = None
+        self._grid_charge_hold_until: datetime | None = None
+        # Measured net charge power (kW into the pack) while GRID_CHARGE applies,
+        # as an EMA of ΔSOC/Δt, plus the previous sample and a sample count.
+        self._observed_charge_kw: float | None = None
+        self._observed_charge_samples: int = 0
+        self._charge_sample: tuple[datetime, float] | None = None
+        # MORNING_EXPORT: the SOC floor the morning sell-down stops at, recomputed
+        # every cycle (it decays through the morning as less load is left to cover).
+        self._morning_export_floor: float = 100.0
         # Consecutive polls with a critical entity unavailable (FAILSAFE debounce)
         self._unavailable_count: int = 0
+        # Monotonic timestamp of the last Modbus-backed write, for write pacing.
+        self._last_write_monotonic: float = 0.0
+        # Detected next price-peak onsets (datetimes), for GRID_CHARGE deadlines
+        # and visibility sensors. None until the first evaluation.
+        self._next_morning_peak: datetime | None = None
+        self._next_evening_peak: datetime | None = None
+        # Learns per-window daily consumption so GRID_CHARGE targets self-tune.
+        self._learner = LoadLearner(hass, config_entry.entry_id)
 
     def _load_options(self):
         """Load options from config entry (options override data)."""
@@ -181,50 +220,26 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             OPT_SOLAR_CURTAIL_PRICE_THRESHOLD: options.get(
                 OPT_SOLAR_CURTAIL_PRICE_THRESHOLD, DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD,
             ),
-            OPT_MORNING_FLOOR_SOC: options.get(
-                OPT_MORNING_FLOOR_SOC, DEFAULT_MORNING_FLOOR_SOC,
-            ),
-            OPT_GRID_CHARGE_TARGET_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_SOC, DEFAULT_GRID_CHARGE_TARGET_SOC,
-            ),
-            OPT_GRID_CHARGE_DEADLINE_HOUR: options.get(
-                OPT_GRID_CHARGE_DEADLINE_HOUR, DEFAULT_GRID_CHARGE_DEADLINE_HOUR,
-            ),
             OPT_GRID_CHARGE_RATE_KW: options.get(
                 OPT_GRID_CHARGE_RATE_KW, DEFAULT_GRID_CHARGE_RATE_KW,
             ),
             OPT_GRID_CHARGE_HYSTERESIS_SOC: options.get(
                 OPT_GRID_CHARGE_HYSTERESIS_SOC, DEFAULT_GRID_CHARGE_HYSTERESIS_SOC,
             ),
-            OPT_GRID_CHARGE_ADAPTIVE: options.get(
-                OPT_GRID_CHARGE_ADAPTIVE, DEFAULT_GRID_CHARGE_ADAPTIVE,
+            OPT_GRID_CHARGE_MIN_RESERVE_SOC: options.get(
+                OPT_GRID_CHARGE_MIN_RESERVE_SOC, DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC,
             ),
-            OPT_GRID_CHARGE_SOLAR_LOW_KWH: options.get(
-                OPT_GRID_CHARGE_SOLAR_LOW_KWH, DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH,
+            OPT_GRID_CHARGE_MAX_SOC: options.get(
+                OPT_GRID_CHARGE_MAX_SOC, DEFAULT_GRID_CHARGE_MAX_SOC,
             ),
-            OPT_GRID_CHARGE_SOLAR_HIGH_KWH: options.get(
-                OPT_GRID_CHARGE_SOLAR_HIGH_KWH, DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH,
+            OPT_MORNING_EXPORT_MIN_PRICE: options.get(
+                OPT_MORNING_EXPORT_MIN_PRICE, DEFAULT_MORNING_EXPORT_MIN_PRICE,
             ),
-            OPT_GRID_CHARGE_TARGET_HIGH_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_HIGH_SOC, DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC,
+            OPT_MORNING_EXPORT_RATE_KW: options.get(
+                OPT_MORNING_EXPORT_RATE_KW, DEFAULT_MORNING_EXPORT_RATE_KW,
             ),
-            OPT_GRID_CHARGE_TARGET_LOW_SOC: options.get(
-                OPT_GRID_CHARGE_TARGET_LOW_SOC, DEFAULT_GRID_CHARGE_TARGET_LOW_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC,
-            ),
-            OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC: options.get(
-                OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-                DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC,
-            ),
-            OPT_EXPECTED_DAYTIME_LOAD_KWH: options.get(
-                OPT_EXPECTED_DAYTIME_LOAD_KWH, DEFAULT_EXPECTED_DAYTIME_LOAD_KWH,
+            OPT_MORNING_EXPORT_TAKEOVER_HOUR: options.get(
+                OPT_MORNING_EXPORT_TAKEOVER_HOUR, DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR,
             ),
             OPT_OUTAGE_DATE: options.get(OPT_OUTAGE_DATE, ""),
             OPT_OUTAGE_TARGET_SOC: options.get(
@@ -259,6 +274,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         """Fetch data from Sigen entities and evaluate priority mode."""
         try:
+            await self._learner.async_load()
             config = self.config_entry.data
             soc_1 = self._get_state_float(config[CONF_SOC_1])
             soc_2 = self._get_state_float(config[CONF_SOC_2])
@@ -306,6 +322,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     "Critical entity unavailable (%d/%d) — holding mode %s",
                     self._unavailable_count, FAILSAFE_DEBOUNCE_POLLS, self._current_mode,
                 )
+            elif self._spike_mission_on():
+                # The spike mission controller is exporting and owns the
+                # plants. Yield: no writes, no evaluation.
+                if self._current_mode != MODE_SPIKE_MISSION:
+                    _LOGGER.info(
+                        "Mode change: %s -> %s (yielding to the spike mission controller)",
+                        self._current_mode, MODE_SPIKE_MISSION,
+                    )
+                    self._current_mode = MODE_SPIKE_MISSION
             else:
                 mean_soc = (soc_1 + soc_2) / 2
 
@@ -322,21 +347,30 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 else:
                     self._outage_prep_active = False
 
+                # The morning sell-down floor decays as the morning progresses, so
+                # it is recomputed every cycle and exposed as a sensor whether or
+                # not the mode is armed.
+                self._morning_export_floor = self._compute_morning_export_floor()
+
                 new_mode = self._evaluate_priority(
                     soc_1, soc_2, backup_soc_1, backup_soc_2, mean_soc,
                 )
 
                 if new_mode != self._current_mode:
                     _LOGGER.info("Mode change: %s -> %s", self._current_mode, new_mode)
-                    # Restore backup SOC when leaving morning floor
-                    if self._current_mode == MODE_MORNING_FLOOR:
-                        await self._restore_backup_soc()
-                    # Restore grid limits when leaving grid charge / outage prep
-                    if self._current_mode in (MODE_GRID_CHARGE, MODE_OUTAGE_PREP):
+                    # Restore grid limits when leaving a mode that constrains them
+                    if self._current_mode in (
+                        MODE_GRID_CHARGE, MODE_OUTAGE_PREP, MODE_MORNING_EXPORT,
+                        MODE_SPIKE_MISSION,
+                    ):
                         await self._restore_all_grid_limits()
                     self._current_mode = new_mode
 
                 await self._apply_mode(self._current_mode)
+
+                # Learn how fast the pack actually fills under this mode, so the
+                # next required_hours is sized off measured kW, not nameplate.
+                self._record_charge_rate_sample(mean_soc)
 
             # Calculate net grid power using signed grid_active_power sensors
             # These are per-plant signed values (positive = import, negative = export).
@@ -353,6 +387,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             mean_soc = ((soc_1 or 0) + (soc_2 or 0)) / 2
             combined_pv = self._get_combined_pv_kw()
             combined_load = self._get_combined_load_kw()
+
+            # Feed the load learner this cycle's consumption so GRID_CHARGE
+            # targets self-tune from real usage.
+            await self._learner.async_record(dt_util.now(), combined_load)
 
             # Calculate net battery power (sum of both plants)
             # Sigen battery_power: positive = charging, negative = discharging
@@ -380,16 +418,54 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "rebalancing_active": self._current_mode == MODE_REBALANCE,
                 "solar_curtail_active": self._current_mode == MODE_SOLAR_CURTAIL,
                 "failsafe_active": self._current_mode == MODE_FAILSAFE,
-                "morning_floor_active": self._current_mode == MODE_MORNING_FLOOR,
                 "grid_charging_active": self._current_mode in (
                     MODE_GRID_CHARGE, MODE_OUTAGE_PREP,
                 ),
                 "grid_charge_target": self._grid_charge_target,
                 "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
+                "morning_export_active": self._current_mode == MODE_MORNING_EXPORT,
+                "spike_mission_active": self._current_mode == MODE_SPIKE_MISSION,
+                "morning_export_floor_soc": self._morning_export_floor,
+                "next_morning_peak": self._next_morning_peak,
+                "next_evening_peak": self._next_evening_peak,
+                "learned_morning_load": round(
+                    self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH), 2,
+                ),
+                "learned_daytime_load": round(
+                    self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH), 2,
+                ),
+                "learned_evening_load": round(
+                    self._learner.evening_kwh(DEFAULT_SEED_EVENING_KWH), 2,
+                ),
+                "learning_days": self._learner.days_learned,
+                "evening_target_soc": self._compute_grid_charge_target(),
+                "overnight_target_soc": self._compute_overnight_target(
+                    self._next_morning_peak,
+                ),
             }
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
             raise UpdateFailed(f"Error: {err}")
+
+    def _spike_mission_on(self) -> bool:
+        """True while the spike mission controller is exporting."""
+        return self.hass.states.is_state(SPIKE_MISSION_ENTITY, "on")
+
+    def async_watch_spike_mission(self) -> None:
+        """Re-evaluate the moment the exporting flag flips, not on the next poll.
+
+        Without this, Sentinel could re-write its own mode for up to 30 s after
+        export starts and fight the controller's first writes.
+        """
+        @callback
+        def _flipped(event: Event) -> None:
+            self.hass.async_create_task(self.async_request_refresh())
+
+        self.config_entry.async_on_unload(
+            async_track_state_change_event(
+                self.hass, [SPIKE_MISSION_ENTITY], _flipped,
+            )
+        )
 
     def _evaluate_priority(
         self,
@@ -402,20 +478,21 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         """Evaluate priority and return the highest-priority valid mode."""
         # Priority 1: FAILSAFE — already handled in _async_update_data
 
-        # Priority 2: SPIKE_EXPORT (stub)
-        if self.is_mode_enabled(MODE_SPIKE_EXPORT):
-            if self._check_spike_export_conditions():
-                return MODE_SPIKE_EXPORT
-
-        # Priority 3: OUTAGE_PREP (stub)
+        # Priority 2: OUTAGE_PREP
         if self.is_mode_enabled(MODE_OUTAGE_PREP):
             if self._check_outage_prep_conditions():
                 return MODE_OUTAGE_PREP
 
-        # Priority 4: GRID_CHARGE (stub)
+        # Priority 3: GRID_CHARGE (two-peak charger)
         if self.is_mode_enabled(MODE_GRID_CHARGE):
             if self._check_grid_charge_conditions():
                 return MODE_GRID_CHARGE
+
+        # Priority 4: MORNING_EXPORT — outranks REBALANCE so the two packs aren't
+        # shuffling energy between themselves while we are trying to sell it.
+        if self.is_mode_enabled(MODE_MORNING_EXPORT):
+            if self._check_morning_export_conditions(mean_soc):
+                return MODE_MORNING_EXPORT
 
         # Priority 5: REBALANCE
         if self.is_mode_enabled(MODE_REBALANCE):
@@ -427,16 +504,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             if self._check_solar_curtail_conditions():
                 return MODE_SOLAR_CURTAIL
 
-        # Priority 7: MORNING_FLOOR
-        if self.is_mode_enabled(MODE_MORNING_FLOOR):
-            if self._check_morning_floor_conditions(mean_soc):
-                return MODE_MORNING_FLOOR
-
-        # Priority 8: SELF_CONSUMPTION (always valid)
+        # Priority 7: SELF_CONSUMPTION (always valid)
         return MODE_SELF_CONSUMPTION
-
-    def _check_spike_export_conditions(self) -> bool:
-        return False
 
     def _check_outage_prep_conditions(self) -> bool:
         return self._outage_prep_active
@@ -509,16 +578,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
 
         return True
 
-    def _check_morning_floor_conditions(self, mean_soc: float) -> bool:
-        """Check if MORNING_FLOOR conditions are met (inside overnight window)."""
-        now = dt_util.now()
-        t = now.hour * 60 + now.minute
-        start = MORNING_FLOOR_START_HOUR * 60 + MORNING_FLOOR_START_MINUTE  # 22:10
-        end = MORNING_FLOOR_END_HOUR * 60 + MORNING_FLOOR_END_MINUTE        # 05:50
-
-        # Window spans midnight: active if past start OR before end
-        return t >= start or t < end
-
     async def _async_fetch_amber_forecasts(self) -> list[dict] | None:
         """Fetch Amber forecasts, using a 15-minute cache."""
         now = dt_util.now()
@@ -537,40 +596,56 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.debug("No amberelectric config entries — GRID_CHARGE forecast unavailable")
             return None
 
-        site_name = amber_entries[0].title
-        try:
-            response = await self.hass.services.async_call(
-                "amberelectric",
-                "get_forecasts",
-                {"config_entry": site_name, "channel_type": "general"},
-                blocking=True,
-                return_response=True,
-            )
+        entry = amber_entries[0]
+        # The service field was renamed `config_entry` → `config_entry_id` (and
+        # now takes the entry_id, not the site title). Passing the old key fails
+        # schema validation outright, which silently strips GRID_CHARGE of every
+        # forecast: no peak detection, no cheap-window selection, and charging
+        # only ever via the last-minute forced path (seen 2026-08-08/09). Try the
+        # current signature first, fall back to the legacy one.
+        attempts = (
+            {"config_entry_id": entry.entry_id, "channel_type": "general"},
+            {"config_entry": entry.title, "channel_type": "general"},
+        )
+        last_err: Exception | None = None
+        for payload in attempts:
+            try:
+                response = await self.hass.services.async_call(
+                    "amberelectric",
+                    "get_forecasts",
+                    payload,
+                    blocking=True,
+                    return_response=True,
+                )
+            except Exception as err:  # noqa: BLE001 — service schema/API errors
+                last_err = err
+                continue
+
             forecasts = (response or {}).get("forecasts", [])
             if not forecasts:
-                _LOGGER.warning("Amber get_forecasts returned empty list")
+                self._warn_forecast("Amber get_forecasts returned empty list")
                 return None
 
             self._forecast_cache = forecasts
             self._forecast_cache_time = now
+            self._forecast_warned_monotonic = None
             _LOGGER.debug("Cached %d Amber forecast intervals", len(forecasts))
             return forecasts
 
-        except Exception as err:
-            _LOGGER.warning("Failed to fetch Amber forecasts: %s", err)
-            return None
+        self._warn_forecast(f"Failed to fetch Amber forecasts: {last_err}")
+        return None
 
-    @staticmethod
-    def _in_grid_charge_window(when: datetime) -> bool:
-        """True if `when` falls inside an allowed off-peak GRID_CHARGE window."""
-        h = when.hour + when.minute / 60.0
-        for start_h, end_h in GRID_CHARGE_WINDOWS:
-            if start_h < end_h:
-                if start_h <= h < end_h:
-                    return True
-            elif h >= start_h or h < end_h:  # window wraps past midnight
-                return True
-        return False
+    def _warn_forecast(self, message: str) -> None:
+        """Log a forecast failure, throttled so a persistent fault isn't spammed."""
+        now = monotonic()
+        if (
+            self._forecast_warned_monotonic is not None
+            and (now - self._forecast_warned_monotonic) < AMBER_FORECAST_WARN_INTERVAL_S
+        ):
+            _LOGGER.debug(message)
+            return
+        self._forecast_warned_monotonic = now
+        _LOGGER.warning(message)
 
     def _select_cheapest_charge_window(
         self, forecasts: list[dict], required_hours: float, deadline: datetime,
@@ -602,9 +677,10 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 end_dt = dt_util.as_local(dt_util.parse_datetime(end_str))
                 if start_dt is None or end_dt is None:
                     continue
-                # Include if: start >= now AND end <= deadline AND inside an
-                # off-peak charge window (so peak intervals never get selected).
-                if start_dt >= now and end_dt <= deadline and self._in_grid_charge_window(start_dt):
+                # Include if start >= now AND end <= deadline. The deadline is the
+                # next price-peak onset, so every eligible interval is pre-peak
+                # (off-peak) by construction — no separate window gate needed.
+                if start_dt >= now and end_dt <= deadline:
                     eligible.append({
                         "start_time": start_str,
                         "start_dt": start_dt,
@@ -647,190 +723,565 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         lo, hi = best_range
         return {eligible[k]["start_time"] for k in range(lo, hi + 1)}
 
-    def _interp_target_from_solar(
-        self, high_soc: float, low_soc: float,
-    ) -> float | None:
-        """Interpolate a SOC target from tomorrow's Solcast forecast.
+    def _kwh_to_soc(self, kwh: float) -> float:
+        """Convert an energy amount to SOC percent of the combined pack."""
+        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
+        return (kwh / capacity_kwh) * 100 if capacity_kwh else 0.0
 
-        Poor solar (≤ low kWh threshold) → high_soc; strong solar (≥ high kWh
-        threshold) → low_soc; linear between. Uses the shared solar low/high kWh
-        thresholds. Returns None if Solcast is unconfigured or unavailable so the
-        caller can fall back to a fixed value.
+    def _backup_reserve_soc(self) -> float:
+        """The Sigen ESS backup-reserve SOC below which the packs won't discharge.
+
+        Energy sitting below this floor is not deliverable to the house, so a
+        kWh-derived charge target must be lifted by this much or the pack floors
+        out mid-peak with the load only partly covered. Uses the mean of the two
+        packs' configured backup SOC (they share one meter); 0 if unreadable.
         """
-        entity_id = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
-        solar_kwh = self._get_state_float(entity_id) if entity_id else None
-        if solar_kwh is None:
-            return None
-
-        low_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_LOW_KWH]
-        high_kwh = self._opts[OPT_GRID_CHARGE_SOLAR_HIGH_KWH]
-
-        if solar_kwh <= low_kwh:
-            target = high_soc
-        elif solar_kwh >= high_kwh or high_kwh <= low_kwh:
-            target = low_soc
-        else:
-            # Linear interpolation: high_soc at low_kwh → low_soc at high_kwh
-            frac = (solar_kwh - low_kwh) / (high_kwh - low_kwh)
-            target = high_soc + frac * (low_soc - high_soc)
-
-        lo, hi = min(low_soc, high_soc), max(low_soc, high_soc)
-        return round(max(lo, min(hi, target)), 1)
+        config = self.config_entry.data
+        values = [
+            v for v in (
+                self._get_state_float(config[CONF_BACKUP_SOC_1]),
+                self._get_state_float(config[CONF_BACKUP_SOC_2]),
+            ) if v is not None
+        ]
+        return sum(values) / len(values) if values else 0.0
 
     def _compute_grid_charge_target(self) -> float:
-        """Return the evening (daytime top-up phase) GRID_CHARGE target SOC.
+        """Evening (daytime-phase) target SOC — enough to cover the *learned*
+        evening-peak load, clamped to [min_reserve, max_charge].
 
-        With adaptive mode off, this is the fixed configured target. With it on,
-        the target is interpolated from tomorrow's Solcast forecast: poor solar →
-        high target (buy grid to cover the evening peak), strong solar → low
-        target (let the sun refill the pack). Falls back to the fixed target if
-        Solcast is unconfigured or unavailable.
+        The learned load is deliverable energy, so it sits *on top of* the ESS
+        backup reserve (the pack won't discharge below it); without that offset
+        the target floors out mid-peak with ~reserve% of the load uncovered.
+
+        Seasonal for free: the trailing average tracks dark winter evenings up
+        (bigger load → higher target) and lighter summer evenings down.
         """
-        fixed = self._opts[OPT_GRID_CHARGE_TARGET_SOC]
-        if not self._opts[OPT_GRID_CHARGE_ADAPTIVE]:
-            return fixed
-
-        target = self._interp_target_from_solar(
-            self._opts[OPT_GRID_CHARGE_TARGET_HIGH_SOC],
-            self._opts[OPT_GRID_CHARGE_TARGET_LOW_SOC],
-        )
-        if target is None:
-            _LOGGER.debug(
-                "GRID_CHARGE adaptive: Solcast tomorrow unavailable — using fixed evening target %.0f%%",
-                fixed,
-            )
-            return fixed
-        _LOGGER.debug("GRID_CHARGE adaptive evening target %.1f%%", target)
-        return target
-
-    def _compute_overnight_target(self) -> float:
-        """Return the overnight-phase GRID_CHARGE cap SOC.
-
-        Modest by design — cover the morning peak and bridge to solar. With
-        adaptive mode off, a fixed cap. With it on, the cap leaves headroom only
-        for the solar we actually expect to *export*: the exportable surplus is
-        tomorrow's forecast PV minus expected daytime site load. That surplus,
-        expressed as SOC, is subtracted from the ceiling.
-
-        This keys the cap off net position, not gross sun. A high-load site whose
-        load swallows all its solar has ~zero surplus, so it charges to the
-        ceiling overnight (buying cheap grid it would otherwise import at peak —
-        no solar is displaced). Only a genuinely sunny, low-load day shows a real
-        surplus, which pulls the cap down toward the floor so daytime solar fills
-        the pack for free instead of spilling to the grid at a poor feed-in
-        price. Falls back to the fixed cap if Solcast is unavailable.
-        """
-        fixed = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC]
-        if not self._opts[OPT_GRID_CHARGE_ADAPTIVE]:
-            return fixed
-
-        entity_id = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
-        solar_kwh = self._get_state_float(entity_id) if entity_id else None
-        if solar_kwh is None:
-            _LOGGER.debug(
-                "GRID_CHARGE adaptive: Solcast tomorrow unavailable — using fixed overnight cap %.0f%%",
-                fixed,
-            )
-            return fixed
-
-        ceiling = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC]
-        floor = self._opts[OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC]
-        lo, hi = min(floor, ceiling), max(floor, ceiling)
-
-        daytime_load = self._opts[OPT_EXPECTED_DAYTIME_LOAD_KWH]
-        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
-        exportable_surplus_kwh = max(0.0, solar_kwh - daytime_load)
-        surplus_soc = (exportable_surplus_kwh / capacity_kwh) * 100 if capacity_kwh else 0.0
-
-        cap = round(max(lo, min(hi, ceiling - surplus_soc)), 1)
+        min_reserve = self._opts[OPT_GRID_CHARGE_MIN_RESERVE_SOC]
+        max_charge = self._opts[OPT_GRID_CHARGE_MAX_SOC]
+        evening_kwh = self._learner.evening_kwh(DEFAULT_SEED_EVENING_KWH)
+        reserve = self._backup_reserve_soc()
+        target = reserve + self._kwh_to_soc(evening_kwh)
+        clamped = round(max(min_reserve, min(max_charge, target)), 1)
         _LOGGER.debug(
-            "GRID_CHARGE adaptive overnight cap %.1f%% (PV %.1f − load %.1f = %.1f kWh surplus → −%.1f%% from ceiling %.0f%%)",
-            cap, solar_kwh, daytime_load, exportable_surplus_kwh, surplus_soc, ceiling,
+            "Evening target %.1f%% (learned evening load %.1f kWh + reserve "
+            "%.1f%%, %d days)",
+            clamped, evening_kwh, reserve, self._learner.days_learned,
         )
-        return cap
+        return clamped
+
+    def _solcast_today_entity(self) -> str | None:
+        """Entity id for *today's* Solcast forecast.
+
+        Prefers the configured value. If the site only wired up the "tomorrow"
+        sensor (today was an optional field and long went unused), derive today's
+        from it — the Solcast integration names the pair identically bar the
+        `_today` / `_tomorrow` suffix — so the post-midnight overnight path reads
+        the right day without needing a reconfigure.
+        """
+        data = self.config_entry.data
+        today = data.get(CONF_SOLCAST_TODAY)
+        if today:
+            return today
+        tomorrow = data.get(CONF_SOLCAST_TOMORROW)
+        if tomorrow and tomorrow.endswith("_tomorrow"):
+            return tomorrow[: -len("_tomorrow")] + "_today"
+        return None
+
+    def _overnight_solar_kwh(
+        self, morning_onset: datetime | None,
+    ) -> tuple[float | None, str]:
+        """Forecast generation (kWh) for the solar day that will refill the pack
+        *after* this overnight charge, plus a short label of which day was read.
+
+        The overnight window straddles midnight (22:00 → morning peak), so the
+        day that dawns after the charge is *tomorrow* before midnight but
+        *today* once past it. We decide from the date of the morning-peak onset
+        this cap charges toward: same date as now → the peak is later today →
+        today's Solcast; otherwise → tomorrow's. Falls back to the other day's
+        entity if the preferred one is unavailable, and to None only when neither
+        can be read.
+        """
+        now = dt_util.now()
+        onset = morning_onset or self._next_morning_peak
+        if onset is not None:
+            coming_day_is_today = onset.date() == now.date()
+        else:
+            coming_day_is_today = now.hour < GRID_CHARGE_MORNING_DEADLINE_HOUR
+
+        today_ent = self._solcast_today_entity()
+        tomorrow_ent = self.config_entry.data.get(CONF_SOLCAST_TOMORROW)
+        if coming_day_is_today:
+            primary, secondary, label = today_ent, tomorrow_ent, "today"
+        else:
+            primary, secondary, label = tomorrow_ent, today_ent, "tomorrow"
+
+        value = self._get_state_float(primary) if primary else None
+        if value is not None:
+            return value, label
+        # Preferred day unavailable — fall back to the other day's forecast.
+        value = self._get_state_float(secondary) if secondary else None
+        return value, (label + "(fallback)" if value is not None else "n/a")
+
+    def _compute_overnight_target(
+        self, morning_onset: datetime | None = None,
+    ) -> float:
+        """Overnight (morning-phase) cap SOC.
+
+        Floor = the *learned* morning-peak load as SOC — this guarantees the
+        morning peak is covered from battery. Ceiling = max_charge. From the
+        ceiling we subtract the exportable solar surplus (the *coming* day's
+        Solcast minus the learned daytime load) so a sunny/low-load day leaves
+        headroom for solar to fill the pack for free, while a winter/high-load
+        day (≈ zero surplus) charges to the ceiling overnight. No forecast →
+        charge to the ceiling to be safe.
+
+        The coming solar day is resolved by `_overnight_solar_kwh` from the
+        morning-peak onset, so the post-midnight part of the window reads
+        today's forecast rather than tomorrow's.
+        """
+        min_reserve = self._opts[OPT_GRID_CHARGE_MIN_RESERVE_SOC]
+        ceiling = self._opts[OPT_GRID_CHARGE_MAX_SOC]
+
+        morning_kwh = self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH)
+        daytime_kwh = self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH)
+        reserve = self._backup_reserve_soc()
+        floor = max(
+            min_reserve, min(ceiling, reserve + self._kwh_to_soc(morning_kwh)),
+        )
+
+        solar_kwh, solar_day = self._overnight_solar_kwh(morning_onset)
+        if solar_kwh is None:
+            cap = ceiling
+        else:
+            surplus_kwh = max(0.0, solar_kwh - daytime_kwh)
+            cap = ceiling - self._kwh_to_soc(surplus_kwh)
+
+        clamped = round(max(floor, min(ceiling, cap)), 1)
+        _LOGGER.debug(
+            "Overnight target %.1f%% (floor %.1f%% from morning %.1f kWh; "
+            "ceiling %.0f%%; %s solar %s − daytime %.1f kWh)",
+            clamped, floor, morning_kwh, ceiling, solar_day,
+            f"{solar_kwh:.1f}" if solar_kwh is not None else "n/a", daytime_kwh,
+        )
+        return clamped
+
+    def _morning_cover_kwh(self, now: datetime, takeover: datetime) -> float:
+        """Energy the house still needs from `now` until solar takes over.
+
+        The learner holds one number for the whole morning band (06–09), so it is
+        pro-rated across however much of that band is still ahead of us — at 05:00
+        the full morning is still to come, by 08:00 only a third of it is. Any part
+        of the cover window that falls outside the learned band (before 06:00, or
+        after 09:00 if the takeover hour is pushed out) is priced at the load the
+        house is drawing right now.
+
+        Finally we never return less than "current load held flat to takeover":
+        the learned average is a fortnight's typical morning, and a morning where
+        the pumps are running is not typical. Erring high just leaves a bit more
+        in the pack.
+        """
+        if takeover <= now:
+            return 0.0
+
+        band_start = now.replace(
+            hour=MORNING_BAND[0], minute=0, second=0, microsecond=0,
+        )
+        band_end = now.replace(
+            hour=MORNING_BAND[1], minute=0, second=0, microsecond=0,
+        )
+        band_hours = MORNING_BAND[1] - MORNING_BAND[0]
+
+        overlap_start = max(now, band_start)
+        overlap_end = min(takeover, band_end)
+        overlap_hours = max(
+            0.0, (overlap_end - overlap_start).total_seconds() / 3600,
+        )
+        total_hours = (takeover - now).total_seconds() / 3600
+        outside_hours = max(0.0, total_hours - overlap_hours)
+        load_kw = self._get_combined_load_kw() or 0.0
+
+        learned_kwh = self._learner.morning_kwh(DEFAULT_SEED_MORNING_KWH)
+        modelled = (
+            learned_kwh * (overlap_hours / band_hours) + outside_hours * load_kw
+        )
+        return max(modelled, total_hours * load_kw)
+
+    def _compute_morning_export_floor(self, now: datetime | None = None) -> float:
+        """The SOC MORNING_EXPORT sells down to — never any lower.
+
+        Two independent floors, whichever is higher:
+
+        1. **Morning cover** — the ESS backup reserve plus the energy still needed
+           to carry the house to solar takeover (× a safety margin). This is the
+           "don't end up importing at the morning peak" guarantee.
+        2. **Evening refill** — the evening target minus what the *coming day's*
+           solar can realistically put back (today's Solcast − the learned daytime
+           load). Selling below this means the pack can't refill from sun alone
+           and the evening peak gets bought from the grid, which costs more than
+           the morning export earned. With no Solcast reading we assume no refill
+           and hold the whole evening target.
+
+        Clamped up to `grid_charge_min_reserve_soc` — the floor the site never
+        deliberately discharges below — and reported by
+        `sensor.…morning_export_floor_soc`.
+        """
+        now = now or dt_util.now()
+        takeover_hour = int(self._opts[OPT_MORNING_EXPORT_TAKEOVER_HOUR])
+        takeover = now.replace(
+            hour=takeover_hour, minute=0, second=0, microsecond=0,
+        )
+
+        reserve = self._backup_reserve_soc()
+        cover_kwh = self._morning_cover_kwh(now, takeover) * MORNING_EXPORT_RESERVE_MARGIN
+        morning_floor = reserve + self._kwh_to_soc(cover_kwh)
+
+        evening_target = self._compute_grid_charge_target()
+        solcast_entity = self._solcast_today_entity()
+        solar_kwh = (
+            self._get_state_float(solcast_entity) if solcast_entity else None
+        )
+        if solar_kwh is None:
+            evening_floor = evening_target
+        else:
+            refill_kwh = max(
+                0.0, solar_kwh - self._learner.daytime_kwh(DEFAULT_SEED_DAYTIME_KWH),
+            )
+            evening_floor = evening_target - self._kwh_to_soc(refill_kwh)
+
+        min_reserve = self._opts[OPT_GRID_CHARGE_MIN_RESERVE_SOC]
+        floor = max(min_reserve, morning_floor, evening_floor)
+        clamped = round(min(100.0, floor), 1)
+        _LOGGER.debug(
+            "Morning export floor %.1f%% (morning cover %.1f%% from %.1f kWh to "
+            "%02d:00; evening refill %.1f%% from solar %s − daytime; min reserve "
+            "%.0f%%)",
+            clamped, morning_floor, cover_kwh, takeover_hour, evening_floor,
+            f"{solar_kwh:.1f}" if solar_kwh is not None else "n/a", min_reserve,
+        )
+        return clamped
+
+    def _check_morning_export_conditions(self, mean_soc: float) -> bool:
+        """Whether to sell the pack into a high morning feed-in price this cycle.
+
+        Fires inside the morning window when the live Amber feed-in price is at or
+        above the configured threshold and the pack sits above the floor computed
+        by `_compute_morning_export_floor`. Never fires while a charge is engaged
+        (charging and discharging in the same cycle is nonsense), and never when a
+        plant is off-grid — there would be nowhere to export to.
+        """
+        # A charge that is committed to a peak outranks selling into this one.
+        if self._grid_charge_active or self._outage_prep_active:
+            return False
+        # ...and so does a charge that has *finished* but is still holding the
+        # pack at target for a peak that hasn't arrived yet. Between top-ups the
+        # hold reads inactive, and without this guard MORNING_EXPORT would sell
+        # off the very charge GRID_CHARGE bought to cover the morning peak. Both
+        # latches are stamped to their deadline and released once it passes, so
+        # this only blocks the pre-peak window. (Only meaningful while GRID_CHARGE
+        # is armed — with the mode off the latches are never refreshed.)
+        if self.is_mode_enabled(MODE_GRID_CHARGE) and (
+            self._grid_charge_hold_until is not None
+            or self._grid_charge_forced_until is not None
+        ):
+            return False
+
+        now = dt_util.now()
+        takeover_hour = int(self._opts[OPT_MORNING_EXPORT_TAKEOVER_HOUR])
+        if not (MORNING_EXPORT_START_HOUR <= now.hour < takeover_hour):
+            return False
+
+        if not self._is_grid_connected():
+            return False
+
+        price = self._get_state_float(AMBER_FEED_IN_PRICE)
+        if price is None:
+            return False
+        if price < self._opts[OPT_MORNING_EXPORT_MIN_PRICE]:
+            return False
+
+        floor = self._morning_export_floor
+        if mean_soc <= floor:
+            if self._current_mode == MODE_MORNING_EXPORT:
+                _LOGGER.info(
+                    "MORNING_EXPORT complete: SOC %.1f%% reached floor %.1f%% "
+                    "(feed-in $%.4f/kWh)", mean_soc, floor, price,
+                )
+            return False
+
+        # Restart band: once stopped at the floor, require a real recovery above
+        # it (early solar) before selling again, so SOC hovering on the floor
+        # doesn't toggle the mode every cycle.
+        if self._current_mode != MODE_MORNING_EXPORT:
+            if mean_soc < (floor + MORNING_EXPORT_RESTART_BAND_SOC):
+                return False
+            _LOGGER.info(
+                "MORNING_EXPORT start: feed-in $%.4f/kWh ≥ $%.4f, SOC %.1f%% "
+                "above floor %.1f%% — selling down until %02d:00",
+                price, self._opts[OPT_MORNING_EXPORT_MIN_PRICE], mean_soc, floor,
+                takeover_hour,
+            )
+
+        return True
+
+    @staticmethod
+    def _next_hour_after(now: datetime, hour: int) -> datetime:
+        """The next occurrence of `hour`:00 local time strictly after `now`."""
+        cand = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if cand <= now:
+            cand += timedelta(days=1)
+        return cand
+
+    @staticmethod
+    def _percentile(values: list[float], q: float) -> float:
+        """Simple nearest-rank percentile (q in 0..1)."""
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        idx = int(q * (len(ordered) - 1))
+        return ordered[idx]
+
+    def _detect_peak_onset(
+        self,
+        forecasts: list[dict] | None,
+        now: datetime,
+        band: tuple[int, int],
+        fallback_hour: int,
+    ) -> tuple[datetime, bool]:
+        """Detect the next price-peak onset within a time-of-day `band`.
+
+        Returns (onset_datetime, is_fallback). The onset is the start of the next
+        forecast interval — occurring after `now`, with its local hour inside
+        `band` — whose price steps above a low-percentile baseline (× factor) or
+        is flagged high/spike by Amber, and which is *sustained* (the following
+        interval is peak too, so a lone blip doesn't trigger). When no forecast or
+        no qualifying peak is found, falls back to the next `fallback_hour`.
+        """
+        fallback = self._next_hour_after(now, fallback_hour)
+        if not forecasts:
+            return fallback, True
+
+        parsed: list[tuple[datetime, float, str]] = []
+        prices: list[float] = []
+        for interval in forecasts:
+            start = dt_util.parse_datetime(interval.get("start_time", "") or "")
+            if start is None:
+                continue
+            try:
+                price = float(interval.get("per_kwh"))
+            except (TypeError, ValueError):
+                continue
+            start = dt_util.as_local(start)
+            desc = str(interval.get("descriptor", "")).lower()
+            parsed.append((start, price, desc))
+            prices.append(price)
+
+        if not parsed:
+            return fallback, True
+
+        parsed.sort(key=lambda x: x[0])
+        baseline = self._percentile(prices, PEAK_DETECT_BASELINE_PCTL)
+        threshold = baseline * PEAK_DETECT_FACTOR
+        band_start, band_end = band
+
+        def is_peak(price: float, desc: str) -> bool:
+            return price >= threshold or desc in ("high", "spike", "extremehigh")
+
+        n = len(parsed)
+        for i, (start, price, desc) in enumerate(parsed):
+            if start <= now:
+                continue
+            if not (band_start <= start.hour < band_end):
+                continue
+            if not is_peak(price, desc):
+                continue
+            # Must be the START of a peak run — the previous interval is not peak.
+            # This stops a mid-peak interval being read as a fresh onset (which
+            # would make the charger think a new peak is 30 min away and charge
+            # right through the peak we're already in).
+            if i == 0 or is_peak(parsed[i - 1][1], parsed[i - 1][2]):
+                continue
+            # Sustained: require the next interval to be peak too (unless last),
+            # so a lone one-interval price blip doesn't count as a peak.
+            if i + 1 < n:
+                _, next_price, next_desc = parsed[i + 1]
+                if not is_peak(next_price, next_desc):
+                    continue
+            _LOGGER.debug(
+                "Peak onset detected %s @ $%.4f/kWh (baseline $%.4f × %.1f = $%.4f)",
+                start.strftime("%a %H:%M"), price, baseline, PEAK_DETECT_FACTOR, threshold,
+            )
+            return start, False
+
+        return fallback, True
+
+    def _resolve_charge_phase(
+        self, now: datetime, morning_onset: datetime, evening_onset: datetime,
+    ) -> tuple[str | None, datetime | None]:
+        """Which pre-peak charge window (if any) `now` falls in, and its deadline.
+
+        - Daytime window: [09:00 on the evening peak's day, evening_onset).
+        - Overnight window: [22:00 the evening before the morning peak, morning_onset).
+        Returns (None, None) when `now` is inside a peak period or between windows.
+        """
+        daytime_start = evening_onset.replace(
+            hour=GRID_CHARGE_DAYTIME_START_HOUR, minute=0, second=0, microsecond=0,
+        )
+        if daytime_start <= now < evening_onset:
+            return "daytime", evening_onset
+
+        overnight_start = morning_onset.replace(
+            hour=GRID_CHARGE_OVERNIGHT_START_HOUR, minute=0, second=0, microsecond=0,
+        ) - timedelta(days=1)
+        if overnight_start <= now < morning_onset:
+            return "overnight", morning_onset
+
+        return None, None
+
+    def _clear_charge_latches(self) -> None:
+        """Drop both GRID_CHARGE latches (charge window over or not applicable)."""
+        self._grid_charge_forced_until = None
+        self._grid_charge_hold_until = None
+
+    def _expire_charge_latches(self, now: datetime, deadline: datetime) -> None:
+        """Expire latches that belong to a past deadline or a different one.
+
+        Each latch is stamped with the deadline it was set for, so the moment the
+        charge phase rolls over to the next peak (or its deadline passes) the
+        latch releases rather than pinning the new phase on. Detected onsets
+        jitter by an interval or two as the forecast refreshes, so only a shift
+        bigger than `GRID_CHARGE_LATCH_TOLERANCE` counts as a different peak.
+        """
+        for attr in ("_grid_charge_forced_until", "_grid_charge_hold_until"):
+            latched = getattr(self, attr)
+            if latched is None:
+                continue
+            moved = abs((deadline - latched).total_seconds())
+            if now >= latched or moved > GRID_CHARGE_LATCH_TOLERANCE.total_seconds():
+                setattr(self, attr, None)
+            elif moved:
+                # Same peak, refined time — track it so the latch expires with it.
+                setattr(self, attr, deadline)
 
     async def _async_evaluate_grid_charge(self, mean_soc: float) -> bool:
         """Evaluate whether GRID_CHARGE should be active this cycle.
 
-        Runs in two phases, chosen by which off-peak window `now` falls in:
-        - Overnight (22:00–06:00): charge toward the overnight cap by the 06:00
-          morning peak. A 06:00 deadline means the midday window can never steal
-          the overnight charge.
-        - Daytime (09:00–16:00): let solar charge first, top up toward the
-          evening target by the evening deadline.
+        Two phases, each charging toward its target by the *detected* onset of the
+        next price peak (not a fixed clock hour):
+        - Overnight: charge toward the overnight cap by the morning-peak onset.
+        - Daytime: let solar charge first, top up toward the evening target by the
+          evening-peak onset (which shifts later in summer as the tariff peak does).
+        Outside both pre-peak windows (i.e. during a peak) GRID_CHARGE is inactive.
         """
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
         now = dt_util.now()
 
-        # Only grid-charge inside the off-peak windows — never during network
-        # peak periods, even when forced.
-        if not self._in_grid_charge_window(now):
-            _LOGGER.debug("GRID_CHARGE: %02d:%02d outside off-peak windows", now.hour, now.minute)
-            # Keep the exposed target sensor meaningful while idle.
+        forecasts = await self._async_fetch_amber_forecasts()
+
+        morning_onset, _m_fb = self._detect_peak_onset(
+            forecasts, now, MORNING_PEAK_BAND, GRID_CHARGE_MORNING_DEADLINE_HOUR,
+        )
+        evening_onset, _e_fb = self._detect_peak_onset(
+            forecasts, now, EVENING_PEAK_BAND, FALLBACK_EVENING_PEAK_HOUR,
+        )
+        self._next_morning_peak = morning_onset
+        self._next_evening_peak = evening_onset
+
+        phase, deadline = self._resolve_charge_phase(now, morning_onset, evening_onset)
+        if phase == "overnight":
+            target_soc = self._compute_overnight_target(morning_onset)
+        elif phase == "daytime":
+            target_soc = self._compute_grid_charge_target()
+        else:
+            # Inside a peak period / between windows — don't charge. Keep the
+            # exposed target sensor meaningful while idle.
             self._grid_charge_target = self._compute_grid_charge_target()
+            self._clear_charge_latches()
             return False
 
-        # Select phase, target and deadline from the current off-peak window.
-        h = now.hour + now.minute / 60.0
-        if h >= 22 or h < GRID_CHARGE_MORNING_DEADLINE_HOUR:
-            phase = "overnight"
-            target_soc = self._compute_overnight_target()
-            deadline = now.replace(
-                hour=GRID_CHARGE_MORNING_DEADLINE_HOUR, minute=0, second=0, microsecond=0,
-            )
-        else:
-            phase = "daytime"
-            target_soc = self._compute_grid_charge_target()
-            deadline = now.replace(
-                hour=int(self._opts[OPT_GRID_CHARGE_DEADLINE_HOUR]),
-                minute=0, second=0, microsecond=0,
-            )
-        if deadline <= now:
-            # Deadline hour has passed today — roll to the same hour tomorrow.
-            deadline += timedelta(days=1)
-
         self._grid_charge_target = target_soc
+        # Latches belong to one deadline; a new phase starts clean.
+        self._expire_charge_latches(now, deadline)
 
-        # Hysteresis: stop at target, don't restart until a configurable band
-        # below it. A wider band stops the mode re-triggering every cycle as load
-        # nibbles the pack just under target.
-        hysteresis = self._opts[OPT_GRID_CHARGE_HYSTERESIS_SOC]
-        if self._current_mode == MODE_GRID_CHARGE:
-            if mean_soc >= target_soc:
+        # Top-up hold: once target is met we stay latched to the deadline and
+        # keep topping the pack back up as household load nibbles it, so it meets
+        # the peak *at* target instead of coasting down for the rest of the
+        # window (86.5% → 80% between 05:50 and 06:35 on 2026-08-09). A small
+        # deadband keeps that to a top-up every several minutes, not every cycle.
+        if mean_soc >= target_soc:
+            if self._grid_charge_hold_until is None:
                 _LOGGER.info(
-                    "GRID_CHARGE stop (%s): SOC %.1f%% >= target %.1f%%",
+                    "GRID_CHARGE target met (%s): SOC %.1f%% >= %.1f%% — holding "
+                    "top-up until %s",
+                    phase, mean_soc, target_soc, deadline.strftime("%a %H:%M"),
+                )
+            self._grid_charge_hold_until = deadline
+            self._grid_charge_forced_until = None
+            return False
+
+        if self._grid_charge_hold_until is not None:
+            # In the hold: charge back to target whenever we sag a band below it.
+            if mean_soc < (target_soc - GRID_CHARGE_TOPUP_BAND_SOC):
+                _LOGGER.debug(
+                    "GRID_CHARGE top-up (%s): SOC %.1f%% sagged below target %.1f%%",
                     phase, mean_soc, target_soc,
                 )
-                return False
-        else:
+                return True
+            # Within the deadband — keep charging only if already doing so, so a
+            # top-up runs all the way back to target instead of stopping short.
+            return self._current_mode == MODE_GRID_CHARGE
+
+        # Hysteresis: don't start until a configurable band below target. A wider
+        # band stops the mode re-triggering every cycle as load nibbles the pack
+        # just under target.
+        hysteresis = self._opts[OPT_GRID_CHARGE_HYSTERESIS_SOC]
+        if self._current_mode != MODE_GRID_CHARGE:
             if mean_soc >= (target_soc - hysteresis):
                 return False
 
         soc_deficit = max(0.0, target_soc - mean_soc)
-        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        deficit_kwh = (soc_deficit / 100.0) * capacity_kwh
+        # Book the window with a safety margin: the rate estimate is imperfect and
+        # load can rise mid-charge, and overshooting the deadline is far more
+        # expensive than starting a little early.
+        required_hours = (
+            deficit_kwh / self._effective_charge_rate_kw(charge_rate_kw)
+        ) * GRID_CHARGE_TIME_MARGIN
         if required_hours <= 0:
             return False
 
         hours_remaining = (deadline - now).total_seconds() / 3600
+        if hours_remaining <= 0:
+            self._clear_charge_latches()
+            return False
 
-        # Forced charge: not enough cheap time left to be selective
-        if hours_remaining < required_hours * 1.5:
+        # Forced charge: not enough cheap time left before the peak to be
+        # selective. Latched to the deadline — the ratio flickers false as SOC
+        # climbs and required_hours shrinks, which chattered the mode on/off ~40
+        # times overnight before the latch (2026-08-09).
+        if self._grid_charge_forced_until is not None:
+            return True
+        if hours_remaining < required_hours * GRID_CHARGE_FORCE_FACTOR:
             _LOGGER.info(
-                "GRID_CHARGE forced (%s): %.2fh remaining < %.2fh required × 1.5",
-                phase, hours_remaining, required_hours,
+                "GRID_CHARGE forced (%s): %.2fh to peak %s < %.2fh required × %.1f "
+                "(rate %.1f kW)",
+                phase, hours_remaining, deadline.strftime("%a %H:%M"), required_hours,
+                GRID_CHARGE_FORCE_FACTOR,
+                self._effective_charge_rate_kw(charge_rate_kw),
             )
+            self._grid_charge_forced_until = deadline
             return True
 
-        forecasts = await self._async_fetch_amber_forecasts()
-        if forecasts is None:
+        # No forecast → can't select cheap intervals; only the forced path above
+        # (which needs none) can act. Stay idle rather than charge blindly.
+        if not forecasts:
             return False
 
         selected = self._select_cheapest_charge_window(forecasts, required_hours, deadline)
         if not selected:
             _LOGGER.debug(
-                "GRID_CHARGE (%s): no eligible intervals before %02d:00",
-                phase, deadline.hour,
+                "GRID_CHARGE (%s): no eligible intervals before peak %s",
+                phase, deadline.strftime("%a %H:%M"),
             )
             return False
 
@@ -949,16 +1400,19 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         charge_rate_kw = self._opts[OPT_GRID_CHARGE_RATE_KW]
         capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
         soc_deficit = max(0.0, target_soc - mean_soc)
-        required_hours = (soc_deficit / 100.0) * capacity_kwh / charge_rate_kw
+        deficit_kwh = (soc_deficit / 100.0) * capacity_kwh
+        required_hours = (
+            deficit_kwh / self._effective_charge_rate_kw(charge_rate_kw)
+        ) * GRID_CHARGE_TIME_MARGIN
         if required_hours <= 0:
             return False
 
         hours_remaining = (window_end - now).total_seconds() / 3600
 
-        if hours_remaining < required_hours * 1.5:
+        if hours_remaining < required_hours * GRID_CHARGE_FORCE_FACTOR:
             _LOGGER.info(
-                "OUTAGE_PREP forced: %.2fh remaining < %.2fh required × 1.5",
-                hours_remaining, required_hours,
+                "OUTAGE_PREP forced: %.2fh remaining < %.2fh required × %.1f",
+                hours_remaining, required_hours, GRID_CHARGE_FORCE_FACTOR,
             )
             return True
 
@@ -1033,20 +1487,108 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return load_2
         return None
 
+    def _effective_charge_rate_kw(self, charge_rate_kw: float) -> float:
+        """Net power actually reaching the battery when grid-charging.
+
+        The charge is applied by setting `grid_import_limitation = charge_rate`,
+        but on Sigen that caps *total* grid import (household load + battery), and
+        Command Charging (PV First) also diverts PV into the pack — so the battery
+        fills at roughly `charge_rate + PV − load`, not the full `charge_rate`.
+        That model is still only an *upper bound*: the plant may not draw the full
+        limit at all (inverter/BMS taper, per-plant caps, a charge_rate set higher
+        than the Sigens will actually pull). So once enough live samples exist we
+        take the lower of the modelled rate and the *measured* one
+        (`_observed_charge_kw`, an EMA of ΔSOC/Δt while charging). Erring low only
+        starts the charge earlier; erring high runs the clock out short of target.
+        Clamped to a small floor so the estimate stays finite when load transiently
+        exceeds the rate.
+        """
+        pv = self._get_combined_pv_kw() or 0.0
+        load = self._get_combined_load_kw() or 0.0
+        modelled = charge_rate_kw + pv - load
+        if (
+            self._observed_charge_kw is not None
+            and self._observed_charge_samples >= GRID_CHARGE_RATE_MIN_SAMPLES
+        ):
+            modelled = min(modelled, self._observed_charge_kw)
+        return max(GRID_CHARGE_MIN_EFFECTIVE_KW, modelled)
+
+    def _record_charge_rate_sample(self, mean_soc: float) -> None:
+        """Measure the net kW reaching the pack while GRID_CHARGE is applied.
+
+        Called once per cycle. While charging, differentiates mean SOC over wall
+        time into kW and folds it into an EMA; outside a charge the sample anchor
+        is dropped so the next charge starts from a fresh pair of readings.
+        Negative/zero deltas (the pack briefly net-discharging) are skipped rather
+        than dragging the estimate below the floor.
+        """
+        if self._current_mode not in (MODE_GRID_CHARGE, MODE_OUTAGE_PREP):
+            self._charge_sample = None
+            return
+
+        now = dt_util.now()
+        previous = self._charge_sample
+        self._charge_sample = (now, mean_soc)
+        if previous is None:
+            return
+
+        elapsed = (now - previous[0]).total_seconds()
+        if not (GRID_CHARGE_RATE_MIN_SAMPLE_S <= elapsed <= GRID_CHARGE_RATE_MAX_SAMPLE_S):
+            # Too short to be meaningful, or a gap (restart/dropout) that would
+            # smear the rate. Keep the new anchor, discard the interval.
+            if elapsed < GRID_CHARGE_RATE_MIN_SAMPLE_S:
+                self._charge_sample = previous
+            return
+
+        capacity_kwh = 2 * self.config_entry.data.get(CONF_CAPACITY_KWH, 24.5)
+        gained_kwh = ((mean_soc - previous[1]) / 100.0) * capacity_kwh
+        if gained_kwh <= 0:
+            return
+
+        observed_kw = gained_kwh / (elapsed / 3600)
+        if self._observed_charge_kw is None:
+            self._observed_charge_kw = observed_kw
+        else:
+            self._observed_charge_kw = (
+                GRID_CHARGE_RATE_EMA_ALPHA * observed_kw
+                + (1 - GRID_CHARGE_RATE_EMA_ALPHA) * self._observed_charge_kw
+            )
+        self._observed_charge_samples += 1
+        _LOGGER.debug(
+            "Charge rate sample: %.2f kW over %.0f s → EMA %.2f kW (%d samples)",
+            observed_kw, elapsed, self._observed_charge_kw,
+            self._observed_charge_samples,
+        )
+
+    async def async_backfill_learning(self) -> int:
+        """Seed the load learner from recorder history and refresh.
+
+        Returns the number of complete days written. Exposed via the
+        ``sentinel.backfill_learning`` service so learning can be expedited
+        instead of waiting for a fortnight of live accumulation.
+        """
+        days = await self._learner.async_backfill(
+            self.hass, [LOAD_POWER_1, LOAD_POWER_2], dt_util.now(),
+        )
+        await self.async_request_refresh()
+        return days
+
     async def _apply_mode(self, mode: str) -> None:
         """Apply the specified mode."""
         if mode == MODE_FAILSAFE:
             await self._async_apply_failsafe()
+        elif mode == MODE_SPIKE_MISSION:
+            return  # the spike mission controller owns the plants
         elif mode == MODE_REBALANCE:
             await self._async_apply_rebalance()
         elif mode == MODE_SOLAR_CURTAIL:
             await self._async_apply_solar_curtail()
-        elif mode == MODE_MORNING_FLOOR:
-            await self._async_apply_morning_floor()
         elif mode == MODE_GRID_CHARGE:
             await self._async_apply_grid_charge()
         elif mode == MODE_OUTAGE_PREP:
             await self._async_apply_grid_charge()
+        elif mode == MODE_MORNING_EXPORT:
+            await self._async_apply_morning_export()
         elif mode == MODE_SELF_CONSUMPTION:
             await self._async_apply_self_consumption()
         else:
@@ -1094,20 +1636,6 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
         await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
-    async def _async_apply_morning_floor(self) -> None:
-        """MORNING_FLOOR: raise backup SOC to floor, stay in self-consumption.
-
-        The battery's built-in ESS logic will grid-charge to maintain the
-        backup SOC floor.  No need to switch to Grid First mode.
-        """
-        config = self.config_entry.data
-        floor_soc = self._opts[OPT_MORNING_FLOOR_SOC]
-
-        await self._set_both_mode(MODE_MAXIMUM_SELF_CONSUMPTION)
-        await self._restore_all_grid_limits()
-        await self._call_service_set_limit(config[CONF_BACKUP_SOC_1], floor_soc)
-        await self._call_service_set_limit(config[CONF_BACKUP_SOC_2], floor_soc)
-
     async def _async_apply_grid_charge(self) -> None:
         """GRID_CHARGE: both batteries Command Charging (PV First) at configured rate.
 
@@ -1149,15 +1677,44 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
         await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
-    async def _restore_backup_soc(self) -> None:
-        """Restore backup SOC to normal value when leaving morning floor."""
+    async def _async_apply_morning_export(self) -> None:
+        """MORNING_EXPORT: both packs Command Discharging (PV First), export capped
+        at the configured rate.
+
+        The rate is split with a bias toward the *higher*-SOC pack (the mirror of
+        the GRID_CHARGE split), so selling also pulls the two packs together and
+        REBALANCE has nothing left to do.
+
+        Import limits are left at full: the floor is what keeps us off the grid,
+        and clamping import to 0 would only turn an unexpected load spike into a
+        brownout instead of a small, deliberate purchase.
+        """
         config = self.config_entry.data
-        await self._call_service_set_limit(
-            config[CONF_BACKUP_SOC_1], DEFAULT_NORMAL_BACKUP_SOC,
-        )
-        await self._call_service_set_limit(
-            config[CONF_BACKUP_SOC_2], DEFAULT_NORMAL_BACKUP_SOC,
-        )
+        export_rate_kw = self._opts[OPT_MORNING_EXPORT_RATE_KW]
+
+        soc_1 = self._get_state_float(config[CONF_SOC_1])
+        soc_2 = self._get_state_float(config[CONF_SOC_2])
+
+        if soc_1 is None or soc_2 is None:
+            per_plant = min(export_rate_kw / 2, DEFAULT_MAX_GRID_LIMIT)
+            rate_1 = rate_2 = per_plant
+        else:
+            soc_diff = abs(soc_1 - soc_2)
+            share_higher = 0.5 + soc_diff / 200.0
+            share_lower = 1.0 - share_higher
+
+            if soc_1 >= soc_2:
+                rate_1 = min(export_rate_kw * share_higher, DEFAULT_MAX_GRID_LIMIT)
+                rate_2 = min(export_rate_kw * share_lower, DEFAULT_MAX_GRID_LIMIT)
+            else:
+                rate_2 = min(export_rate_kw * share_higher, DEFAULT_MAX_GRID_LIMIT)
+                rate_1 = min(export_rate_kw * share_lower, DEFAULT_MAX_GRID_LIMIT)
+
+        await self._set_both_mode(MODE_COMMAND_DISCHARGING_PV_FIRST)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_1], rate_1)
+        await self._call_service_set_limit(config[CONF_EXPORT_LIMIT_2], rate_2)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_1], DEFAULT_MAX_GRID_LIMIT)
+        await self._call_service_set_limit(config[CONF_IMPORT_LIMIT_2], DEFAULT_MAX_GRID_LIMIT)
 
     async def _async_apply_self_consumption(self) -> None:
         """SELF_CONSUMPTION: both batteries to normal mode, restore limits."""
@@ -1195,7 +1752,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             return
         if state.state == mode:
             return
-        await self.hass.services.async_call(
+        await self._paced_service_call(
             "select", "select_option",
             {"entity_id": entity_id, "option": mode},
         )
@@ -1219,10 +1776,33 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             current = None
         if current is not None and abs(current - value) < WRITE_TOLERANCE:
             return
-        await self.hass.services.async_call(
+        await self._paced_service_call(
             "number", "set_value",
             {"entity_id": entity_id, "value": value},
         )
+
+    async def _paced_service_call(
+        self, domain: str, service: str, data: dict
+    ) -> None:
+        """Issue a Modbus-backed service call, paced so the Sigen dongles are
+        never hit with a burst of commands.
+
+        The gateways have a single-connection Modbus interface that can be
+        knocked offline by too many writes at once. Every actual write to a
+        plant routes through here: consecutive writes are spaced by at least
+        WRITE_MIN_GAP_SECONDS, and each is awaited to completion (blocking)
+        before the next is dispatched, so a multi-control mode change trickles
+        out one Modbus transaction at a time instead of all at once.
+        """
+        gap = WRITE_MIN_GAP_SECONDS - (monotonic() - self._last_write_monotonic)
+        if gap > 0:
+            await asyncio.sleep(gap)
+        try:
+            await self.hass.services.async_call(
+                domain, service, data, blocking=True,
+            )
+        finally:
+            self._last_write_monotonic = monotonic()
 
     def _plant_is_reachable_for(self, entity_id: str) -> bool:
         """Whether the plant that owns `entity_id` is currently reachable.

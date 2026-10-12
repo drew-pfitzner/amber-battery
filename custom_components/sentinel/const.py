@@ -1,5 +1,7 @@
 """Constants for Sentinel Energy Manager."""
 
+from datetime import timedelta
+
 DOMAIN = "sentinel"
 SCAN_INTERVAL_SECONDS = 30
 
@@ -10,12 +12,12 @@ FAILSAFE_DEBOUNCE_POLLS = 2
 
 # Mode constants
 MODE_FAILSAFE = "FAILSAFE"
-MODE_SPIKE_EXPORT = "SPIKE_EXPORT"
+MODE_SPIKE_MISSION = "SPIKE_MISSION"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
+MODE_MORNING_EXPORT = "MORNING_EXPORT"
 MODE_SOLAR_CURTAIL = "SOLAR_CURTAIL"
-MODE_MORNING_FLOOR = "MORNING_FLOOR"
 MODE_SELF_CONSUMPTION = "SELF_CONSUMPTION"
 
 # Config entry keys (for Sigen entity IDs)
@@ -62,43 +64,22 @@ OPT_REBALANCE_TRANSFER_RATE = "rebalance_transfer_rate"
 # Options keys — solar curtail
 OPT_SOLAR_CURTAIL_PRICE_THRESHOLD = "solar_curtail_price_threshold"
 
-# Options keys — morning floor
-OPT_MORNING_FLOOR_SOC = "morning_floor_soc"
-
 # Options keys — grid charge
-OPT_GRID_CHARGE_TARGET_SOC = "grid_charge_target_soc"
-OPT_GRID_CHARGE_DEADLINE_HOUR = "grid_charge_deadline_hour"
 OPT_GRID_CHARGE_RATE_KW = "grid_charge_rate_kw"
 # SOC band below target before a stopped GRID_CHARGE restarts (hysteresis). A
 # wider band stops the mode re-triggering every cycle as load nibbles the pack.
 OPT_GRID_CHARGE_HYSTERESIS_SOC = "grid_charge_hysteresis_soc"
 
-# Options keys — grid charge solar-adaptive target
-# When enabled, the overnight GRID_CHARGE target SOC is interpolated from
-# tomorrow's Solcast forecast: poor solar → high target (buy cheap overnight),
-# strong solar → low target (let the sun refill the batteries for free).
-OPT_GRID_CHARGE_ADAPTIVE = "grid_charge_adaptive_target"
-OPT_GRID_CHARGE_SOLAR_LOW_KWH = "grid_charge_solar_low_kwh"      # at/below → high target
-OPT_GRID_CHARGE_SOLAR_HIGH_KWH = "grid_charge_solar_high_kwh"    # at/above → low target
-OPT_GRID_CHARGE_TARGET_HIGH_SOC = "grid_charge_target_high_soc"  # evening target at poor solar
-OPT_GRID_CHARGE_TARGET_LOW_SOC = "grid_charge_target_low_soc"    # evening target at strong solar
+# Options keys — grid charge SOC clamps (Stage 3). With learned targets these
+# two are the only SOC knobs left: the floor the battery is never charged below,
+# and the ceiling it is never charged above (protects solar headroom + longevity).
+OPT_GRID_CHARGE_MIN_RESERVE_SOC = "grid_charge_min_reserve_soc"
+OPT_GRID_CHARGE_MAX_SOC = "grid_charge_max_soc"
 
-# Options keys — grid charge overnight cap (phase 1)
-# GRID_CHARGE runs in two phases: an overnight phase (charge to a modest cap by
-# the morning peak, leaving headroom for solar) and a daytime top-up phase
-# (let solar charge first, top up with cheap grid to the evening target). The
-# overnight cap uses the SAME solar low/high kWh thresholds as the evening
-# target for its adaptive interpolation.
-OPT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = "grid_charge_overnight_target_soc"            # fixed cap (adaptive off)
-OPT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = "grid_charge_overnight_target_high_soc"  # overnight cap ceiling (no solar surplus)
-OPT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = "grid_charge_overnight_target_low_soc"    # overnight cap floor (large solar surplus)
-# Expected daytime household/site consumption during solar hours (kWh). Used to
-# turn tomorrow's forecast solar into an *exportable surplus* (forecast PV minus
-# this load). The adaptive overnight cap leaves headroom only for that surplus,
-# so a high-load site still charges to the ceiling (solar won't export) while a
-# sunny, low-load day holds the cap down so daytime solar fills the pack for free
-# instead of spilling to the grid at a poor feed-in price.
-OPT_EXPECTED_DAYTIME_LOAD_KWH = "expected_daytime_load_kwh"
+# Options keys — morning export
+OPT_MORNING_EXPORT_MIN_PRICE = "morning_export_min_price"
+OPT_MORNING_EXPORT_RATE_KW = "morning_export_rate_kw"
+OPT_MORNING_EXPORT_TAKEOVER_HOUR = "morning_export_takeover_hour"
 
 # Options keys — outage prep
 OPT_OUTAGE_DATE = "outage_date"               # ISO date string (YYYY-MM-DD) or ""
@@ -109,50 +90,128 @@ DEFAULT_BATTERY_CAPACITY_KWH = 24.5
 DEFAULT_REBALANCE_START_THRESHOLD = 10.0  # % — wider start band curbs all-day rebalance churn
 DEFAULT_REBALANCE_STOP_THRESHOLD = 3.0   # %
 DEFAULT_REBALANCE_TRANSFER_RATE = 3.0    # kW
-DEFAULT_MORNING_FLOOR_SOC = 40.0         # %
 DEFAULT_SOLAR_CURTAIL_PRICE_THRESHOLD = 0.01  # $/kWh — curtail export below this feed-in price
-DEFAULT_GRID_CHARGE_TARGET_SOC = 85.0       # %
-DEFAULT_GRID_CHARGE_DEADLINE_HOUR = 17      # 5 PM local time
 DEFAULT_GRID_CHARGE_RATE_KW = 7.0           # kW total across both plants
 DEFAULT_GRID_CHARGE_HYSTERESIS_SOC = 3.0    # % — restart band below target once stopped
-DEFAULT_GRID_CHARGE_ADAPTIVE = False        # off by default — opt-in seasonal target
-DEFAULT_GRID_CHARGE_SOLAR_LOW_KWH = 20.0    # kWh — at/below this tomorrow's solar → high target
-DEFAULT_GRID_CHARGE_SOLAR_HIGH_KWH = 45.0   # kWh — at/above this tomorrow's solar → low target
-DEFAULT_GRID_CHARGE_TARGET_HIGH_SOC = 95.0  # % — evening target when solar is poor
-DEFAULT_GRID_CHARGE_TARGET_LOW_SOC = 35.0   # % — evening target when solar is strong
-# Overnight cap (phase 1) — how full to charge by the morning peak. Kept below
-# the evening target so daytime solar has headroom to fill the rest for free.
-DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_SOC = 60.0       # % — fixed cap when adaptive off
-DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_HIGH_SOC = 85.0  # % — overnight cap ceiling (no exportable solar surplus)
-DEFAULT_GRID_CHARGE_OVERNIGHT_TARGET_LOW_SOC = 45.0   # % — overnight cap floor (large exportable solar surplus)
-DEFAULT_EXPECTED_DAYTIME_LOAD_KWH = 45.0    # kWh — site consumption during solar hours (surplus = forecast PV − this)
 DEFAULT_OUTAGE_TARGET_SOC = 90.0            # %
+
+# Morning export — sell the pack down while the morning feed-in price is high,
+# but only as far as the *floor* that still covers the house until solar takes
+# over, and only as far as the coming day's solar can put back before the
+# evening peak. See MORNING_EXPORT in CONTROL_LOGIC.md.
+DEFAULT_MORNING_EXPORT_MIN_PRICE = 0.15     # $/kWh feed-in — below this, don't sell
+DEFAULT_MORNING_EXPORT_RATE_KW = 10.0       # kW total export across both plants
+DEFAULT_MORNING_EXPORT_TAKEOVER_HOUR = 9.0  # local hour solar is assumed to carry the house
+
+# Grid charge SOC clamps (Stage 3)
+DEFAULT_GRID_CHARGE_MIN_RESERVE_SOC = 20.0  # % — never charge target below this
+DEFAULT_GRID_CHARGE_MAX_SOC = 90.0          # % — never charge target above this
+
+# Seed loads (kWh) used until the learner has at least one full day of history.
+# Chosen to reproduce the previous fixed-target behaviour (~85% evening, ~40%
+# overnight floor on a 49 kWh pack) before learning takes over.
+DEFAULT_SEED_MORNING_KWH = 20.0
+DEFAULT_SEED_EVENING_KWH = 40.0
+DEFAULT_SEED_DAYTIME_KWH = 45.0
 
 # Outage prep overnight charge window (local time, day BEFORE outage → outage day morning)
 OUTAGE_PREP_START_HOUR = 22                 # 10 PM on day before
 OUTAGE_PREP_END_HOUR = 6                    # 6 AM on outage day
-DEFAULT_NORMAL_BACKUP_SOC = 10.0         # % — restored when leaving morning floor
 DEFAULT_MAX_GRID_LIMIT = 12.0            # kW — full inverter capacity; Sigen throttles to its own internal limit
 DEFAULT_MAX_CHARGE_SOC = 95.0            # %
 DEFAULT_BACKUP_BUFFER = 5.0              # % margin above backup SOC
 
-# GRID_CHARGE off-peak windows (local time). Grid charging is only allowed
-# inside these windows to avoid network/Amber peak periods (06:00–09:00 and
-# 16:00–22:00). Each entry is (start_hour, end_hour); a window whose start > end
-# wraps past midnight. Applies to all GRID_CHARGE paths, including forced charge.
-GRID_CHARGE_WINDOWS = ((22, 6), (9, 16))    # 10 PM–6 AM and 9 AM–4 PM
-
-# GRID_CHARGE phase boundaries (local hour). The overnight phase charges toward
-# the overnight cap by the morning peak; the daytime phase tops up toward the
-# evening target by the evening deadline (grid_charge_deadline_hour).
-GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — overnight phase completes by here
+# GRID_CHARGE phase boundaries (local hour). The overnight charge window opens
+# at 22:00 (after the evening peak); the daytime window opens at 09:00 (after the
+# morning peak). Each window CLOSES at the next detected price-peak onset — see
+# peak-onset detection below — so the deadline tracks the seasonal shift of the
+# tariff peak instead of a fixed clock hour.
+GRID_CHARGE_OVERNIGHT_START_HOUR = 22       # 10 PM — overnight charge window opens
 GRID_CHARGE_DAYTIME_START_HOUR = 9          # 9 AM — daytime top-up window opens
+# Fallback peak hours, used when the Amber forecast is unavailable or shows no
+# clear peak. These reproduce the previous fixed-hour behaviour.
+GRID_CHARGE_MORNING_DEADLINE_HOUR = 6       # 6 AM — fallback morning-peak onset
+FALLBACK_EVENING_PEAK_HOUR = 16             # 4 PM — fallback evening-peak onset
 
-# Morning floor time window
-MORNING_FLOOR_START_HOUR = 22   # 10 PM
-MORNING_FLOOR_START_MINUTE = 10
-MORNING_FLOOR_END_HOUR = 5      # 5 AM
-MORNING_FLOOR_END_MINUTE = 50
+# Peak-onset detection. The GRID_CHARGE deadline is the start of the next
+# price-peak period, detected from the Amber forecast so it follows the tariff's
+# seasonal shift. An interval counts as "peak" when its price is at least
+# PEAK_DETECT_FACTOR × a low-percentile baseline of the forecast horizon, or Amber
+# flags it high/spike. Onset must be sustained (the next interval is peak too) to
+# ignore lone blips. Each onset is searched for only within its time-of-day band.
+PEAK_DETECT_FACTOR = 1.4                     # price ≥ baseline × this ⇒ peak
+PEAK_DETECT_BASELINE_PCTL = 0.30             # baseline = this percentile of prices
+MORNING_PEAK_BAND = (4, 11)                  # search 04:00–11:00 for morning onset
+EVENING_PEAK_BAND = (13, 21)                 # search 13:00–21:00 for evening onset
+
+# MORNING_EXPORT window and safety factors.
+# The window opens at this hour — early enough to catch a pre-dawn feed-in spike,
+# after the overnight charge has normally finished — and closes at the (settable)
+# solar-takeover hour. Outside it the mode never fires.
+MORNING_EXPORT_START_HOUR = 4
+# The reserve the mode leaves behind is the *modelled* remaining morning load
+# multiplied by this. Selling too much means buying it back at morning-peak
+# prices, which costs far more than the last kWh of export earns, so the model is
+# deliberately padded.
+MORNING_EXPORT_RESERVE_MARGIN = 1.2
+# Restart band: once the pack reaches the floor, it must recover this far above
+# it (e.g. from early solar) before exporting resumes. Without the band SOC
+# hovers on the floor and the mode chatters on and off every cycle.
+MORNING_EXPORT_RESTART_BAND_SOC = 3.0
+
+# SPIKE_MISSION: a manual price-spike export flown from the Spike Control
+# dashboard by an HA automation (`automation.spike_mission_controller`), not by
+# Sentinel. The controller turns this flag on only while it is actually driving
+# the plants (exporting). While it is on Sentinel yields — it writes nothing — so
+# the two never fight. While a mission is merely armed (waiting for the price, or
+# holding at its floor) the flag is off and Sentinel runs normally, rebalancing
+# included. Only FAILSAFE outranks it. Hardcoded like the Sigen load/PV sensors.
+SPIKE_MISSION_ENTITY = "input_boolean.spike_exporting"
+
+# Floor for the *net* charge power used to size required_hours. The battery fills
+# at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid
+# import, and PV First diverts PV into the pack), so a raw charge_rate under-books
+# the window and the pack lands just shy of target. Clamp to this floor so the
+# estimate stays finite when load transiently exceeds the rate.
+GRID_CHARGE_MIN_EFFECTIVE_KW = 0.5
+
+# Observed charge rate. The modelled rate (charge_rate + PV − load) is an upper
+# bound the plant often can't hit — inverter/BMS taper, per-plant limits, a
+# charge_rate set above what the Sigens will actually draw. Sentinel therefore
+# *measures* the net kW reaching the pack while it charges (ΔSOC over Δt) and
+# keeps an EMA of it, using whichever of modelled/observed is lower to size
+# required_hours. Under-estimating the rate only starts the charge earlier;
+# over-estimating runs the clock out short of target (seen 2026-08-09).
+GRID_CHARGE_RATE_EMA_ALPHA = 0.25          # weight of each new observation
+GRID_CHARGE_RATE_MIN_SAMPLE_S = 60         # ignore samples shorter than this
+GRID_CHARGE_RATE_MAX_SAMPLE_S = 600        # ignore stale gaps (restart, dropout)
+GRID_CHARGE_RATE_MIN_SAMPLES = 3           # trust the EMA only after this many
+
+# Safety margin on the charge duration. required_hours is booked this much longer
+# than the arithmetic minimum so a mid-charge load increase, a slower-than-modelled
+# ramp, or a late start doesn't land the pack short at the peak.
+GRID_CHARGE_TIME_MARGIN = 1.3
+
+# Forced charge: fires when the time left to the peak drops below
+# required_hours × this. Once forced, the charge LATCHES to the deadline — the
+# ratio recomputes every cycle as SOC climbs, so without the latch the mode
+# chattered on/off every few minutes (40+ transitions overnight, 2026-08-09).
+GRID_CHARGE_FORCE_FACTOR = 1.5
+
+# Top-up hold. Reaching target *before* the deadline used to end the charge, and
+# household load then coasted the pack down so it met the peak several % below
+# target. Instead GRID_CHARGE stays latched until the deadline passes and tops
+# the pack back up whenever it sags this far below target.
+GRID_CHARGE_TOPUP_BAND_SOC = 1.0
+
+# How far a re-detected peak onset may move before its latches are treated as
+# belonging to a *different* peak. Onsets jitter by an interval or two as the
+# Amber forecast refreshes; a whole hour of movement is a genuinely new peak.
+GRID_CHARGE_LATCH_TOLERANCE = timedelta(hours=1)
+
+# Throttle for repeated Amber forecast failures (seconds between warnings) — a
+# broken service signature otherwise logs every 30 s poll (1231 lines/10 h).
+AMBER_FORECAST_WARN_INTERVAL_S = 900
 
 # Load power sensors (not configurable — known Sigen entity IDs)
 LOAD_POWER_1 = "sensor.sigen_plant_consumed_power"

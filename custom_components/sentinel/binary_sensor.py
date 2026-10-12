@@ -23,9 +23,9 @@ async def async_setup_entry(
         SentinelFailsafeActiveSensor(coordinator),
         SentinelRebalancingActiveSensor(coordinator),
         SentinelSolarCurtailActiveSensor(coordinator),
-        SentinelMorningFloorActiveSensor(coordinator),
         SentinelGridChargingActiveSensor(coordinator),
         SentinelOutagePrepActiveSensor(coordinator),
+        SentinelMorningExportActiveSensor(coordinator),
     ]
 
     async_add_entities(sensors)
@@ -83,24 +83,6 @@ class SentinelSolarCurtailActiveSensor(CoordinatorEntity, BinarySensorEntity):
         return self.coordinator.data.get("solar_curtail_active", False)
 
 
-class SentinelMorningFloorActiveSensor(CoordinatorEntity, BinarySensorEntity):
-    """Binary sensor showing if morning floor mode is active."""
-
-    def __init__(self, coordinator):
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{DOMAIN}_morning_floor_active"
-        self._attr_name = "Morning Floor Active"
-        self._attr_device_class = BinarySensorDeviceClass.RUNNING
-        self._attr_icon = "mdi:battery-arrow-up"
-        self._attr_device_info = coordinator.device_info
-
-    @property
-    def is_on(self) -> bool | None:
-        """Return True if morning floor is active."""
-        return self.coordinator.data.get("morning_floor_active", False)
-
-
 class SentinelGridChargingActiveSensor(CoordinatorEntity, BinarySensorEntity):
     """Binary sensor showing if grid charging is active."""
 
@@ -132,3 +114,19 @@ class SentinelOutagePrepActiveSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         return self.coordinator.data.get("outage_prep_active", False)
+
+
+class SentinelMorningExportActiveSensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor showing if the morning sell-down is active."""
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_morning_export_active"
+        self._attr_name = "Morning Export Active"
+        self._attr_device_class = BinarySensorDeviceClass.RUNNING
+        self._attr_icon = "mdi:transmission-tower-export"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        return self.coordinator.data.get("morning_export_active", False)

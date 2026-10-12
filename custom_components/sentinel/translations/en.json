@@ -38,7 +38,7 @@
       },
       "amber": {
         "title": "Amber Electric Integration (Optional)",
-        "description": "Link your Amber Electric price data for grid charging and spike export.",
+        "description": "Link your Amber Electric price data for grid charging.",
         "data": {
           "amber_general_price": "Current Price Sensor (optional)",
           "amber_general_forecast": "Price Forecast Sensor (optional)",
@@ -101,14 +101,8 @@
       "sentinel_rebalance_enabled": {
         "name": "Enable Rebalancing"
       },
-      "sentinel_morning_floor_enabled": {
-        "name": "Enable Morning Floor"
-      },
       "sentinel_grid_charge_enabled": {
         "name": "Enable Grid Charging"
-      },
-      "sentinel_spike_export_enabled": {
-        "name": "Enable Spike Export"
       },
       "sentinel_outage_prep_enabled": {
         "name": "Enable Outage Prep"
