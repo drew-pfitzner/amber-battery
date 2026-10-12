@@ -35,6 +35,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Store coordinator
     hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator}
+    coordinator.async_watch_spike_mission()
 
     # Forward setup to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -6,7 +6,8 @@ import logging
 from time import monotonic
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -16,6 +17,7 @@ from .const import (
     DOMAIN,
     SCAN_INTERVAL_SECONDS,
     MODE_FAILSAFE,
+    MODE_SPIKE_MISSION,
     MODE_OUTAGE_PREP,
     MODE_GRID_CHARGE,
     MODE_REBALANCE,
@@ -111,6 +113,7 @@ from .const import (
     FAILSAFE_DEBOUNCE_POLLS,
     OUTAGE_PREP_START_HOUR,
     OUTAGE_PREP_END_HOUR,
+    SPIKE_MISSION_ENTITY,
 )
 from .learning import LoadLearner, MORNING_BAND
 
@@ -319,6 +322,15 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     "Critical entity unavailable (%d/%d) — holding mode %s",
                     self._unavailable_count, FAILSAFE_DEBOUNCE_POLLS, self._current_mode,
                 )
+            elif self._spike_mission_on():
+                # A manual spike mission owns the plants (the HA controller
+                # automation drives them). Yield: no writes, no evaluation.
+                if self._current_mode != MODE_SPIKE_MISSION:
+                    _LOGGER.info(
+                        "Mode change: %s -> %s (yielding to the spike mission controller)",
+                        self._current_mode, MODE_SPIKE_MISSION,
+                    )
+                    self._current_mode = MODE_SPIKE_MISSION
             else:
                 mean_soc = (soc_1 + soc_2) / 2
 
@@ -349,6 +361,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     # Restore grid limits when leaving a mode that constrains them
                     if self._current_mode in (
                         MODE_GRID_CHARGE, MODE_OUTAGE_PREP, MODE_MORNING_EXPORT,
+                        MODE_SPIKE_MISSION,
                     ):
                         await self._restore_all_grid_limits()
                     self._current_mode = new_mode
@@ -411,6 +424,7 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                 "grid_charge_target": self._grid_charge_target,
                 "outage_prep_active": self._current_mode == MODE_OUTAGE_PREP,
                 "morning_export_active": self._current_mode == MODE_MORNING_EXPORT,
+                "spike_mission_active": self._current_mode == MODE_SPIKE_MISSION,
                 "morning_export_floor_soc": self._morning_export_floor,
                 "next_morning_peak": self._next_morning_peak,
                 "next_evening_peak": self._next_evening_peak,
@@ -432,6 +446,26 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         except Exception as err:
             _LOGGER.error("Error in coordinator update: %s", err)
             raise UpdateFailed(f"Error: {err}")
+
+    def _spike_mission_on(self) -> bool:
+        """True while the Spike Control mission toggle is on."""
+        return self.hass.states.is_state(SPIKE_MISSION_ENTITY, "on")
+
+    def async_watch_spike_mission(self) -> None:
+        """Re-evaluate the moment the mission toggle flips, not on the next poll.
+
+        Without this, Sentinel could re-write its own mode for up to 30 s after
+        the mission starts and fight the controller's first writes.
+        """
+        @callback
+        def _flipped(event: Event) -> None:
+            self.hass.async_create_task(self.async_request_refresh())
+
+        self.config_entry.async_on_unload(
+            async_track_state_change_event(
+                self.hass, [SPIKE_MISSION_ENTITY], _flipped,
+            )
+        )
 
     def _evaluate_priority(
         self,
@@ -1543,6 +1577,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
         """Apply the specified mode."""
         if mode == MODE_FAILSAFE:
             await self._async_apply_failsafe()
+        elif mode == MODE_SPIKE_MISSION:
+            return  # the spike mission controller owns the plants
         elif mode == MODE_REBALANCE:
             await self._async_apply_rebalance()
         elif mode == MODE_SOLAR_CURTAIL:

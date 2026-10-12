@@ -12,6 +12,7 @@ FAILSAFE_DEBOUNCE_POLLS = 2
 
 # Mode constants
 MODE_FAILSAFE = "FAILSAFE"
+MODE_SPIKE_MISSION = "SPIKE_MISSION"
 MODE_OUTAGE_PREP = "OUTAGE_PREP"
 MODE_GRID_CHARGE = "GRID_CHARGE"
 MODE_REBALANCE = "REBALANCE"
@@ -157,6 +158,13 @@ MORNING_EXPORT_RESERVE_MARGIN = 1.2
 # it (e.g. from early solar) before exporting resumes. Without the band SOC
 # hovers on the floor and the mode chatters on and off every cycle.
 MORNING_EXPORT_RESTART_BAND_SOC = 3.0
+
+# SPIKE_MISSION: a manual price-spike export flown from the Spike Control
+# dashboard by an HA automation (`automation.spike_mission_controller`), not by
+# Sentinel. While this toggle is on Sentinel yields — it writes nothing — so the
+# two never fight over the plants. Turning it off hands control back. Only
+# FAILSAFE outranks it. Hardcoded like the Sigen load/PV sensors.
+SPIKE_MISSION_ENTITY = "input_boolean.spike_mission_active"
 
 # Floor for the *net* charge power used to size required_hours. The battery fills
 # at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid
