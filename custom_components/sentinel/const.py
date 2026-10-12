@@ -161,10 +161,12 @@ MORNING_EXPORT_RESTART_BAND_SOC = 3.0
 
 # SPIKE_MISSION: a manual price-spike export flown from the Spike Control
 # dashboard by an HA automation (`automation.spike_mission_controller`), not by
-# Sentinel. While this toggle is on Sentinel yields — it writes nothing — so the
-# two never fight over the plants. Turning it off hands control back. Only
-# FAILSAFE outranks it. Hardcoded like the Sigen load/PV sensors.
-SPIKE_MISSION_ENTITY = "input_boolean.spike_mission_active"
+# Sentinel. The controller turns this flag on only while it is actually driving
+# the plants (exporting). While it is on Sentinel yields — it writes nothing — so
+# the two never fight. While a mission is merely armed (waiting for the price, or
+# holding at its floor) the flag is off and Sentinel runs normally, rebalancing
+# included. Only FAILSAFE outranks it. Hardcoded like the Sigen load/PV sensors.
+SPIKE_MISSION_ENTITY = "input_boolean.spike_exporting"
 
 # Floor for the *net* charge power used to size required_hours. The battery fills
 # at charge_rate + PV − load (the Sigen grid_import_limitation caps total grid

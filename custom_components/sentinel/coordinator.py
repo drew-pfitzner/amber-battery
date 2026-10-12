@@ -323,8 +323,8 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
                     self._unavailable_count, FAILSAFE_DEBOUNCE_POLLS, self._current_mode,
                 )
             elif self._spike_mission_on():
-                # A manual spike mission owns the plants (the HA controller
-                # automation drives them). Yield: no writes, no evaluation.
+                # The spike mission controller is exporting and owns the
+                # plants. Yield: no writes, no evaluation.
                 if self._current_mode != MODE_SPIKE_MISSION:
                     _LOGGER.info(
                         "Mode change: %s -> %s (yielding to the spike mission controller)",
@@ -448,14 +448,14 @@ class SentinelCoordinator(DataUpdateCoordinator[dict]):
             raise UpdateFailed(f"Error: {err}")
 
     def _spike_mission_on(self) -> bool:
-        """True while the Spike Control mission toggle is on."""
+        """True while the spike mission controller is exporting."""
         return self.hass.states.is_state(SPIKE_MISSION_ENTITY, "on")
 
     def async_watch_spike_mission(self) -> None:
-        """Re-evaluate the moment the mission toggle flips, not on the next poll.
+        """Re-evaluate the moment the exporting flag flips, not on the next poll.
 
         Without this, Sentinel could re-write its own mode for up to 30 s after
-        the mission starts and fight the controller's first writes.
+        export starts and fight the controller's first writes.
         """
         @callback
         def _flipped(event: Event) -> None:
