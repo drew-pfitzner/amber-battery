@@ -201,9 +201,11 @@ window end). Starting one used to mean disabling Sentinel's config entry by hand
   for the whole mission, so rebalancing stopped while it sat armed waiting for
   the price. Now the controller owns `input_boolean.spike_exporting`, on only in its
   export branch. Live test: armed 2 min, Sentinel kept REBALANCE and the plants
-  were untouched; flag on → SPIKE_MISSION in 3 s, off → REBALANCE in ~6 s. The
-  controller's own export branch has not run live on this version yet: feed-in
-  was $0.17 and the gate's minimum is $0.20.
+  were untouched; flag on → SPIKE_MISSION in 3 s, off → REBALANCE in ~6 s.
+- [x] **16:31 first live export on this version.** Feed-in $10.37 cleared the
+  $10 gate; the controller set the flag, Sentinel went SPIKE_MISSION, the plants
+  exported 12 kW (5.5 + 6.5) and the phone alert fired. The packs started at
+  59 / 60.5 % because Sentinel had been rebalancing while armed.
 - Controller + dashboard source: `../power/spike_control/`. Per-plant export
   ceiling is ~7 kW (installer/DNSP setting, not visible in HA).
 
